@@ -32,7 +32,7 @@ Welcome to the Fall Design Report for the Dream to World Engine project. This pa
 
 ### 6. PPT Slideshow
 • Slides include ABET Concerns  
-• [Slideshow PDF](docs/presentation/slides.pdf)
+• [Slideshow PDF](docs/presentation/Dream_to_World_Engine_Presentation.pdf)
 
 ### 7. Self Assessment Essays
 • Updated version of Assignment 3  
