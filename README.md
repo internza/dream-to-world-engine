@@ -51,6 +51,16 @@ Welcome to the Fall Design Report for the Dream to World Engine project. This pa
 • [Meeting Notes](docs/appendix/meeting_notes.md)  
 • [Work Hours Evidence](docs/appendix/work_hours.md)
 
+### 11. User Documentation
+
+* [User Documentation Home](docs/user_docs/README.md)
+* [Quick Start](docs/user_docs/quick_start.md)
+* [Installation](docs/user_docs/installation.md)
+* [User Guide](docs/user_docs/user_guide.md)
+* [User Manual](docs/user_docs/user_manual.md)
+* [FAQ](docs/user_docs/faq.md)
+* [Troubleshooting](docs/user_docs/troubleshooting.md)
+
 ---
 
 ## Notes
