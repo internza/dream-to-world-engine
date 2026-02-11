@@ -1,0 +1,14 @@
+{
+  "name": "dtwe",
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "start": "node --loader ts-node/esm src/index.ts",
+    "web": "node scripts/web-dev.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.2"
+  }
+}
