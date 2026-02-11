@@ -138,17 +138,22 @@ export function transformDreamToWorld(dream: string): WorldModel {
 
   allTokens.forEach((word, index) => {
     if (classifyWord(word) === "descriptor") {
-      const next = allTokens[index + 1];
       const from = entityByName.get(word);
-      const to = next ? entityByName.get(next) : undefined;
-
-      if (from && to && (to.type === "place" || to.type === "object")) {
-        relationships.push({
-          id: `relation_${relationships.length + 1}`,
-          type: "modifies",
-          from: from.id,
-          to: to.id
-        });
+      if (from) {
+        for (let i = index + 1; i < allTokens.length; i += 1) {
+          const candidate = entityByName.get(allTokens[i]);
+          if (!candidate) continue;
+          if (candidate.type === "descriptor") continue;
+          if (candidate.type === "place" || candidate.type === "object") {
+            relationships.push({
+              id: `relation_${relationships.length + 1}`,
+              type: "modifies",
+              from: from.id,
+              to: candidate.id
+            });
+          }
+          break;
+        }
       }
     }
 
