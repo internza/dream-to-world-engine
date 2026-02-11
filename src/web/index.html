@@ -4,16 +4,53 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DTWE Dream to World</title>
+    <link rel="stylesheet" href="/web/styles.css" />
   </head>
   <body>
-    <h1>Dream to World</h1>
-    <textarea id="dream-input" rows="6" cols="60" placeholder="Type a dream..."></textarea>
-    <div>
-      <button id="generate-btn">Generate World</button>
+    <div class="page">
+      <header class="topbar">
+        <div class="brand">Dream to World</div>
+        <div class="topbar-actions">
+          <button class="pill" type="button">Demo</button>
+          <button class="pill" type="button">Docs</button>
+        </div>
+      </header>
+
+      <section class="hero">
+        <div class="badge">Prototype</div>
+        <h1 class="headline">Dream to World</h1>
+        <p class="subhead">Type a dream. Generate a world. Explore it.</p>
+        <div class="input-card">
+          <textarea
+            id="dream-input"
+            class="textarea"
+            rows="4"
+            placeholder="Type a dream..."
+          ></textarea>
+          <button id="generate-btn" class="primary-button" type="button">
+            Generate World
+          </button>
+        </div>
+      </section>
+
+      <section class="grid">
+        <article class="card">
+          <div class="card-title">World View</div>
+          <div class="card-subtitle">Generated 3D layout</div>
+          <div class="canvas-wrap">
+            <canvas id="world-canvas"></canvas>
+          </div>
+          <div id="controls-hint" class="hint">
+            Controls: Click canvas to look. WASD move. Space up. Shift down. Esc unlock.
+          </div>
+        </article>
+        <article class="card">
+          <div class="card-title">World JSON</div>
+          <div class="card-subtitle">Structured output</div>
+          <pre id="output" class="json-pre">Enter a dream to see output.</pre>
+        </article>
+      </section>
     </div>
-    <div id="controls-hint">Controls: Click canvas to look. WASD move. Space up. Shift down. Esc unlock.</div>
-    <canvas id="world-canvas" style="width: 100%; height: 480px; display: block;"></canvas>
-    <pre id="output">Enter a dream to see output.</pre>
     <script type="module" src="/web/app.js"></script>
   </body>
 </html>

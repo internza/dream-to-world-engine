@@ -30,6 +30,14 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (url === "/web/styles.css") {
+    const cssPath = join(srcDir, "web", "styles.css");
+    const css = await readFile(cssPath, "utf8");
+    res.writeHead(200, { "Content-Type": "text/css; charset=utf-8" });
+    res.end(css);
+    return;
+  }
+
   const safePath = normalize(join(distDir, url));
   if (!safePath.startsWith(distDir)) {
     res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
