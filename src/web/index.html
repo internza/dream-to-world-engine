@@ -11,8 +11,8 @@
       <header class="topbar">
         <div class="brand">Dream to World</div>
         <div class="topbar-actions">
-          <button class="pill" type="button">Demo</button>
-          <button class="pill" type="button">Docs</button>
+          <button id="mute-btn" class="pill" type="button">Mute</button>
+          <button id="camera-toggle-btn" class="pill" type="button">Camera: 1st</button>
         </div>
       </header>
 
@@ -24,13 +24,20 @@
           <textarea
             id="dream-input"
             class="textarea"
-            rows="4"
-            placeholder="Type a dream..."
+            rows="3"
+            placeholder="Type a dream... (press Enter to generate)"
+            autofocus
           ></textarea>
-          <button id="generate-btn" class="primary-button" type="button">
-            Generate World
-          </button>
+          <div class="input-actions">
+            <button id="generate-btn" class="primary-button" type="button">
+              Generate World
+            </button>
+            <button id="random-btn" class="secondary-button" type="button">
+              Random Dream
+            </button>
+          </div>
         </div>
+        <div id="dream-status" class="dream-status"></div>
       </section>
 
       <section class="grid">
@@ -39,9 +46,18 @@
           <div class="card-subtitle">Generated 3D layout</div>
           <div class="canvas-wrap">
             <canvas id="world-canvas"></canvas>
+            <div id="crosshair" class="crosshair"></div>
+            <div id="interaction-hint" class="interaction-hint" style="display:none">Press E to interact</div>
+            <div id="feedback-text" class="feedback-text" style="opacity:0"></div>
+            <div id="discovery-text" class="discovery-text" style="opacity:0"></div>
+            <div id="generation-overlay" class="generation-overlay" style="display:none">
+              <div class="generation-spinner"></div>
+              <span class="generation-label">Dreaming...</span>
+            </div>
           </div>
           <div id="controls-hint" class="hint">
-            Controls: Click canvas to look. WASD move. Space up. Shift down. Esc unlock.
+            Controls: Click canvas to look around. WASD move. Space jump. Shift sprint. E interact. V camera. Esc unlock.
+            <span id="camera-mode-hint" class="camera-badge">1st Person</span>
           </div>
         </article>
         <article class="card">
