@@ -1,6 +1,6 @@
 // @ts-expect-error - CDN ESM import is resolved by the browser at runtime.
 import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
-import type { WorldModel, WorldEntity, SemanticTags, ScaleType, EntityType, EnvironmentType } from "../core/transform.js";
+import type { WorldModel, WorldEntity, SemanticTags, ScaleType, EntityType, EnvironmentType, EnvironmentArchetype } from "../core/transform.js";
 import { resolveSurfaceProfile } from "./surface.js";
 import type { SurfaceProfile } from "./surface.js";
 import { accumulateFootstep, resetFootstepAccumulator, setFootstepSurface, playInteractionSound } from "./audio.js";
@@ -100,6 +100,7 @@ interface Chunk {
 }
 const loadedChunks = new Map<string, Chunk>();
 let activeSemantics: SemanticTags | null = null;
+let activeArchetype: EnvironmentArchetype | null = null;
 let streamingEnabled = false;
 let lastPlayerChunkX = 0;
 let lastPlayerChunkZ = 0;
@@ -299,6 +300,7 @@ export function renderWorld(world: WorldModel): void {
 
   // Store semantics for streaming & scale
   activeSemantics = world.semantics;
+  activeArchetype = world.archetype;
   activeScaleMultiplier = scaleMultiplierForSemantics(world.semantics.scale);
   streamingEnabled = true;
   loadedChunks.clear();
@@ -492,6 +494,12 @@ export function renderWorld(world: WorldModel): void {
   // ── 14A: Dream distortions on placed entities ──────────────────────
   applyDreamDistortions(rng, groupById, world.semantics);
 
+  // ── 14B: Archetype-aware world building ────────────────────────────
+  buildArchetypeEnvironment(rng, world.archetype, world.semantics, placedPositions, activeScaleMultiplier);
+  applyCompositionRules(rng, world, groupById, placedPositions, activeScaleMultiplier);
+  placeLandmarksAndPaths(rng, world.archetype, world.semantics, placedPositions, activeScaleMultiplier);
+  populateBackground(rng, world.archetype, world.semantics, activeScaleMultiplier);
+
   // ── 14A: Populate density layers (ground / mid / upper / background)
   populateDensityLayers(rng, world.semantics, placedPositions, activeScaleMultiplier);
 
@@ -611,6 +619,7 @@ export function disposeWorld(): void {
   loadedChunks.clear();
   streamingEnabled = false;
   activeSemantics = null;
+  activeArchetype = null;
   collisionBoxes.length = 0;
   discoveredLandmarks.clear();
   playerVelY = 0;
@@ -1948,6 +1957,956 @@ function createBackgroundSilhouette(rng: () => number, env: EnvironmentType, sm:
       cloud.position.set((rng() - 0.5) * 60, 20 + rng() * 40, (rng() - 0.5) * 40);
       group.add(cloud);
     }
+  }
+
+  return group;
+}
+
+// ── 14B: Archetype-Aware World Building ──────────────────────────────
+
+function buildArchetypeEnvironment(
+  rng: () => number,
+  archetype: EnvironmentArchetype,
+  semantics: SemanticTags,
+  placedPositions: THREE.Vector3[],
+  sm: number
+): void {
+  if (!worldGroup) return;
+
+  const builders: Record<EnvironmentArchetype, () => void> = {
+    floating_city: () => buildFloatingCity(rng, semantics, placedPositions, sm),
+    ocean_realm: () => buildOceanRealm(rng, semantics, placedPositions, sm),
+    forest_ruins: () => buildForestRuins(rng, semantics, placedPositions, sm),
+    storm_void: () => buildStormVoid(rng, semantics, placedPositions, sm),
+    surreal_desert: () => buildSurrealDesert(rng, semantics, placedPositions, sm),
+    castle_sky: () => buildCastleSky(rng, semantics, placedPositions, sm),
+    dream_zone: () => buildDreamZone(rng, semantics, placedPositions, sm),
+  };
+
+  builders[archetype]();
+}
+
+function tooClose(pos: THREE.Vector3, existing: THREE.Vector3[], minDist: number): boolean {
+  return existing.some((p) => p.distanceTo(pos) < minDist);
+}
+
+function buildFloatingCity(
+  rng: () => number,
+  semantics: SemanticTags,
+  placedPositions: THREE.Vector3[],
+  sm: number
+): void {
+  if (!worldGroup) return;
+  const mat = new THREE.MeshStandardMaterial({ color: 0x3a3f48, roughness: 0.5, metalness: 0.2 });
+  const cloudMat = new THREE.MeshStandardMaterial({ color: 0xe8eaf0, roughness: 0.8, transparent: true, opacity: 0.55 });
+
+  // Cloud shelf / layered platforms
+  for (let i = 0; i < 6; i++) {
+    const r = (12 + rng() * 20) * sm;
+    const cloud = new THREE.Mesh(new THREE.SphereGeometry(r, 12, 8), cloudMat);
+    cloud.scale.y = 0.12 + rng() * 0.08;
+    const pos = new THREE.Vector3((rng() - 0.5) * 60, -2 + rng() * 4, (rng() - 0.5) * 60);
+    cloud.position.copy(pos);
+    worldGroup.add(cloud);
+  }
+
+  // Edge towers / spires
+  for (let i = 0; i < 8; i++) {
+    const angle = (i / 8) * Math.PI * 2 + (rng() - 0.5) * 0.3;
+    const dist = 25 + rng() * 18;
+    const pos = new THREE.Vector3(Math.cos(angle) * dist, 0, Math.sin(angle) * dist);
+    if (tooClose(pos, placedPositions, 8)) continue;
+    const h = (8 + rng() * 18) * sm;
+    const w = (2 + rng() * 3) * sm;
+    const tower = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), mat);
+    tower.position.set(pos.x, h / 2, pos.z);
+    tower.castShadow = true;
+    worldGroup.add(tower);
+    placedPositions.push(pos);
+  }
+
+  // Distant skyline silhouettes
+  for (let i = 0; i < 12; i++) {
+    const angle = (i / 12) * Math.PI * 2 + (rng() - 0.5) * 0.2;
+    const dist = 70 + rng() * 40;
+    const h = (10 + rng() * 30) * sm;
+    const w = (3 + rng() * 5) * sm;
+    const sil = new THREE.Mesh(
+      new THREE.BoxGeometry(w, h, w),
+      new THREE.MeshBasicMaterial({ color: 0x1a2030, fog: true })
+    );
+    sil.position.set(Math.cos(angle) * dist, h / 2, Math.sin(angle) * dist);
+    worldGroup.add(sil);
+  }
+
+  // Hanging fragments / supports
+  for (let i = 0; i < 5; i++) {
+    const pos = new THREE.Vector3((rng() - 0.5) * 40, -(3 + rng() * 8), (rng() - 0.5) * 40);
+    const s = (1 + rng() * 2.5) * sm;
+    const frag = new THREE.Mesh(new THREE.TetrahedronGeometry(s, 0), mat);
+    frag.position.copy(pos);
+    frag.rotation.set(rng() * Math.PI, rng() * Math.PI, rng() * Math.PI);
+    frag.userData.floating = true;
+    floatingGroups.push({ group: frag as unknown as THREE.Group, baseY: pos.y, phase: rng() * Math.PI * 2 });
+    worldGroup.add(frag);
+  }
+
+  // Side buildings filling gaps
+  for (let i = 0; i < 10; i++) {
+    const angle = rng() * Math.PI * 2;
+    const dist = 10 + rng() * 30;
+    const pos = new THREE.Vector3(Math.cos(angle) * dist, 0, Math.sin(angle) * dist);
+    if (tooClose(pos, placedPositions, 6)) continue;
+    const h = (3 + rng() * 10) * sm;
+    const w = (2 + rng() * 3) * sm;
+    const building = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), mat);
+    building.position.set(pos.x, h / 2, pos.z);
+    building.castShadow = true;
+    worldGroup.add(building);
+    placedPositions.push(pos);
+  }
+}
+
+function buildOceanRealm(
+  rng: () => number,
+  _semantics: SemanticTags,
+  placedPositions: THREE.Vector3[],
+  sm: number
+): void {
+  if (!worldGroup) return;
+  const rockMat = new THREE.MeshStandardMaterial({ color: 0x5a6570, roughness: 0.85 });
+
+  // Islands / pillars / rock formations near shore
+  for (let i = 0; i < 8; i++) {
+    const angle = rng() * Math.PI * 2;
+    const dist = 30 + rng() * 50;
+    const pos = new THREE.Vector3(Math.cos(angle) * dist, 0, Math.sin(angle) * dist);
+    if (tooClose(pos, placedPositions, 10)) continue;
+    const h = (3 + rng() * 10) * sm;
+    const r = (2 + rng() * 4) * sm;
+    const rock = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.4, r, h, 8), rockMat);
+    rock.position.set(pos.x, h / 2, pos.z);
+    rock.castShadow = true;
+    worldGroup.add(rock);
+    placedPositions.push(pos);
+  }
+
+  // Distant horizon silhouettes: towers / ruins
+  for (let i = 0; i < 8; i++) {
+    const angle = (i / 8) * Math.PI * 2 + (rng() - 0.5) * 0.3;
+    const dist = 120 + rng() * 80;
+    const h = (10 + rng() * 25) * sm;
+    const sil = new THREE.Mesh(
+      new THREE.BoxGeometry(3 * sm, h, 3 * sm),
+      new THREE.MeshBasicMaterial({ color: 0x1a2530, fog: true })
+    );
+    sil.position.set(Math.cos(angle) * dist, h / 2, Math.sin(angle) * dist);
+    worldGroup.add(sil);
+  }
+
+  // Scattered rock outcroppings near edges
+  for (let i = 0; i < 12; i++) {
+    const angle = rng() * Math.PI * 2;
+    const dist = 15 + rng() * 60;
+    const pos = new THREE.Vector3(Math.cos(angle) * dist, 0, Math.sin(angle) * dist);
+    if (tooClose(pos, placedPositions, 5)) continue;
+    const r = (1 + rng() * 2.5) * sm;
+    const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(r, 0), rockMat);
+    rock.position.set(pos.x, r * 0.3, pos.z);
+    rock.rotation.set(rng() * 0.3, rng() * Math.PI, 0);
+    rock.castShadow = true;
+    worldGroup.add(rock);
+  }
+
+  // Shoreline variation: small flat rocks
+  for (let i = 0; i < 6; i++) {
+    const angle = rng() * Math.PI * 2;
+    const dist = 8 + rng() * 20;
+    const r = (2 + rng() * 3) * sm;
+    const flat = new THREE.Mesh(new THREE.CylinderGeometry(r, r * 1.2, 0.5, 10), rockMat);
+    flat.position.set(Math.cos(angle) * dist, 0.15, Math.sin(angle) * dist);
+    worldGroup.add(flat);
+  }
+}
+
+function buildForestRuins(
+  rng: () => number,
+  _semantics: SemanticTags,
+  placedPositions: THREE.Vector3[],
+  sm: number
+): void {
+  if (!worldGroup) return;
+  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x4a3520, roughness: 0.9 });
+  const leafMat = new THREE.MeshStandardMaterial({ color: 0x1a4a2a, roughness: 0.7 });
+  const ruinMat = new THREE.MeshStandardMaterial({ color: 0x7a7568, roughness: 0.85 });
+
+  // Dense tree clusters (3 clusters of 6-10 trees)
+  for (let cluster = 0; cluster < 3; cluster++) {
+    const cx = (rng() - 0.5) * 60;
+    const cz = (rng() - 0.5) * 60;
+    const count = 6 + Math.floor(rng() * 5);
+    for (let i = 0; i < count; i++) {
+      const trunkH = (5 + rng() * 7) * sm;
+      const trunk = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.2 * sm, 0.3 * sm, trunkH, 7),
+        trunkMat
+      );
+      const tx = cx + (rng() - 0.5) * 18;
+      const tz = cz + (rng() - 0.5) * 18;
+      trunk.position.set(tx, trunkH / 2, tz);
+      trunk.castShadow = true;
+      worldGroup.add(trunk);
+      const crownR = (2.5 + rng() * 3) * sm;
+      const crown = new THREE.Mesh(new THREE.SphereGeometry(crownR, 8, 8), leafMat);
+      crown.position.set(tx, trunkH + crownR * 0.5, tz);
+      crown.castShadow = true;
+      worldGroup.add(crown);
+    }
+  }
+
+  // Ruin clusters: broken columns / monuments
+  for (let cluster = 0; cluster < 2; cluster++) {
+    const cx = (rng() - 0.5) * 40;
+    const cz = (rng() - 0.5) * 40;
+    const count = 4 + Math.floor(rng() * 4);
+    for (let i = 0; i < count; i++) {
+      const h = (2 + rng() * 5) * sm;
+      const w = (1 + rng() * 1.5) * sm;
+      const ruin = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), ruinMat);
+      ruin.position.set(cx + (rng() - 0.5) * 15, h / 2, cz + (rng() - 0.5) * 15);
+      ruin.rotation.y = rng() * Math.PI;
+      ruin.rotation.z = (rng() - 0.5) * 0.25;
+      ruin.castShadow = true;
+      worldGroup.add(ruin);
+    }
+    // Broken columns
+    for (let i = 0; i < 3; i++) {
+      const h = (3 + rng() * 6) * sm;
+      const col = new THREE.Mesh(new THREE.CylinderGeometry(0.4 * sm, 0.6 * sm, h, 8), ruinMat);
+      col.position.set(cx + (rng() - 0.5) * 12, h / 2, cz + (rng() - 0.5) * 12);
+      col.rotation.z = (rng() - 0.5) * 0.3;
+      col.castShadow = true;
+      worldGroup.add(col);
+    }
+  }
+
+  // Open clearings: grass patches
+  for (let i = 0; i < 3; i++) {
+    const r = (4 + rng() * 5) * sm;
+    const clearing = new THREE.Mesh(
+      new THREE.CircleGeometry(r, 16),
+      new THREE.MeshStandardMaterial({ color: 0x3a6a30, roughness: 0.9, side: THREE.DoubleSide })
+    );
+    clearing.rotation.x = -Math.PI / 2;
+    clearing.position.set((rng() - 0.5) * 40, 0.03, (rng() - 0.5) * 40);
+    worldGroup.add(clearing);
+  }
+
+  // Background tree silhouettes
+  for (let i = 0; i < 10; i++) {
+    const angle = (i / 10) * Math.PI * 2 + (rng() - 0.5) * 0.3;
+    const dist = 80 + rng() * 60;
+    const h = (15 + rng() * 20) * sm;
+    const sil = new THREE.Mesh(
+      new THREE.ConeGeometry(6 * sm, h, 6),
+      new THREE.MeshBasicMaterial({ color: 0x0a1a0a, fog: true })
+    );
+    sil.position.set(Math.cos(angle) * dist, h / 2, Math.sin(angle) * dist);
+    worldGroup.add(sil);
+  }
+}
+
+function buildStormVoid(
+  rng: () => number,
+  _semantics: SemanticTags,
+  placedPositions: THREE.Vector3[],
+  sm: number
+): void {
+  if (!worldGroup) return;
+  const debrisMat = new THREE.MeshStandardMaterial({ color: 0x3a4a50, roughness: 0.8 });
+
+  // Floating debris clusters
+  for (let cluster = 0; cluster < 4; cluster++) {
+    const cx = (rng() - 0.5) * 60;
+    const cy = 8 + rng() * 25;
+    const cz = (rng() - 0.5) * 60;
+    const count = 4 + Math.floor(rng() * 5);
+    const grp = new THREE.Group();
+    for (let i = 0; i < count; i++) {
+      const s = (0.5 + rng() * 2) * sm;
+      const frag = new THREE.Mesh(new THREE.TetrahedronGeometry(s, 0), debrisMat);
+      frag.position.set((rng() - 0.5) * 8, (rng() - 0.5) * 4, (rng() - 0.5) * 8);
+      frag.rotation.set(rng() * Math.PI, rng() * Math.PI, rng() * Math.PI);
+      frag.castShadow = true;
+      grp.add(frag);
+    }
+    grp.position.set(cx, cy, cz);
+    grp.userData.floating = true;
+    floatingGroups.push({ group: grp, baseY: cy, phase: rng() * Math.PI * 2 });
+    worldGroup.add(grp);
+  }
+
+  // Broken structures
+  for (let i = 0; i < 5; i++) {
+    const angle = rng() * Math.PI * 2;
+    const dist = 20 + rng() * 40;
+    const pos = new THREE.Vector3(Math.cos(angle) * dist, 0, Math.sin(angle) * dist);
+    if (tooClose(pos, placedPositions, 8)) continue;
+    const h = (4 + rng() * 10) * sm;
+    const w = (1.5 + rng() * 3) * sm;
+    const structure = new THREE.Mesh(new THREE.BoxGeometry(w, h, w * 0.4), debrisMat);
+    structure.position.set(pos.x, h / 2, pos.z);
+    structure.rotation.z = (rng() - 0.5) * 0.3;
+    structure.rotation.x = (rng() - 0.5) * 0.15;
+    structure.castShadow = true;
+    worldGroup.add(structure);
+    placedPositions.push(pos);
+  }
+
+  // Dark atmospheric particles
+  for (let i = 0; i < 8; i++) {
+    const sparkMat = new THREE.MeshStandardMaterial({
+      color: 0x4a6a8a, emissive: new THREE.Color(0x2a4a6a),
+      emissiveIntensity: 0.4, roughness: 0.3
+    });
+    const r = (0.15 + rng() * 0.3) * sm;
+    const spark = new THREE.Mesh(new THREE.SphereGeometry(r, 6, 6), sparkMat);
+    spark.position.set((rng() - 0.5) * 50, 3 + rng() * 15, (rng() - 0.5) * 50);
+    worldGroup.add(spark);
+  }
+}
+
+function buildSurrealDesert(
+  rng: () => number,
+  _semantics: SemanticTags,
+  placedPositions: THREE.Vector3[],
+  sm: number
+): void {
+  if (!worldGroup) return;
+  const sandMat = new THREE.MeshStandardMaterial({ color: 0xc8a860, roughness: 0.95 });
+
+  // Dense dune fields
+  for (let i = 0; i < 10; i++) {
+    const r = (5 + rng() * 12) * sm;
+    const dune = new THREE.Mesh(new THREE.SphereGeometry(r, 10, 6), sandMat);
+    dune.scale.y = 0.2 + rng() * 0.1;
+    dune.position.set((rng() - 0.5) * 80, 0, (rng() - 0.5) * 80);
+    worldGroup.add(dune);
+  }
+
+  // Rock pillars / monoliths
+  const pillarMat = new THREE.MeshStandardMaterial({ color: 0x8a7560, roughness: 0.85 });
+  for (let i = 0; i < 6; i++) {
+    const angle = rng() * Math.PI * 2;
+    const dist = 20 + rng() * 40;
+    const pos = new THREE.Vector3(Math.cos(angle) * dist, 0, Math.sin(angle) * dist);
+    if (tooClose(pos, placedPositions, 8)) continue;
+    const h = (5 + rng() * 14) * sm;
+    const pillar = new THREE.Mesh(new THREE.CylinderGeometry(1 * sm, 1.5 * sm, h, 8), pillarMat);
+    pillar.position.set(pos.x, h / 2, pos.z);
+    pillar.castShadow = true;
+    worldGroup.add(pillar);
+    placedPositions.push(pos);
+  }
+
+  // Floating surreal fragments
+  const fragMat = new THREE.MeshStandardMaterial({
+    color: 0x8a6aa0, roughness: 0.2,
+    emissive: new THREE.Color(0x4a2a6a), emissiveIntensity: 0.3,
+    transparent: true, opacity: 0.6
+  });
+  for (let i = 0; i < 5; i++) {
+    const s = (1.5 + rng() * 3) * sm;
+    const shape = rng() < 0.5
+      ? new THREE.Mesh(new THREE.OctahedronGeometry(s, 0), fragMat)
+      : new THREE.Mesh(new THREE.TetrahedronGeometry(s, 0), fragMat);
+    const y = 6 + rng() * 15;
+    shape.position.set((rng() - 0.5) * 50, y, (rng() - 0.5) * 50);
+    shape.rotation.set(rng() * Math.PI, rng() * Math.PI, rng() * Math.PI);
+    shape.userData.floating = true;
+    floatingGroups.push({ group: shape as unknown as THREE.Group, baseY: y, phase: rng() * Math.PI * 2 });
+    worldGroup.add(shape);
+  }
+
+  // Mirrored duplicate objects (surreal feel)
+  for (let i = 0; i < 3; i++) {
+    const h = (2 + rng() * 6) * sm;
+    const w = (1 + rng() * 2) * sm;
+    const obj = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), pillarMat);
+    const x = (rng() - 0.5) * 40;
+    const z = (rng() - 0.5) * 40;
+    obj.position.set(x, h / 2, z);
+    obj.castShadow = true;
+    worldGroup.add(obj);
+    // Mirror copy
+    const mirror = obj.clone();
+    mirror.position.set(-x, h / 2, -z);
+    mirror.rotation.y = Math.PI;
+    worldGroup.add(mirror);
+  }
+}
+
+function buildCastleSky(
+  rng: () => number,
+  _semantics: SemanticTags,
+  placedPositions: THREE.Vector3[],
+  sm: number
+): void {
+  if (!worldGroup) return;
+  const wallMat = new THREE.MeshStandardMaterial({ color: 0x6b6259, roughness: 0.8, metalness: 0.1 });
+  const cloudMat = new THREE.MeshStandardMaterial({ color: 0xe0e4ea, roughness: 0.85, transparent: true, opacity: 0.55 });
+
+  // Supporting cloud shelves beneath castle
+  for (let i = 0; i < 5; i++) {
+    const r = (10 + rng() * 15) * sm;
+    const cloud = new THREE.Mesh(new THREE.SphereGeometry(r, 10, 8), cloudMat);
+    cloud.scale.y = 0.1 + rng() * 0.08;
+    cloud.position.set((rng() - 0.5) * 40, -3 + rng() * 3, (rng() - 0.5) * 40);
+    worldGroup.add(cloud);
+  }
+
+  // Surrounding towers / turrets
+  for (let i = 0; i < 6; i++) {
+    const angle = (i / 6) * Math.PI * 2 + (rng() - 0.5) * 0.3;
+    const dist = 20 + rng() * 15;
+    const pos = new THREE.Vector3(Math.cos(angle) * dist, 0, Math.sin(angle) * dist);
+    if (tooClose(pos, placedPositions, 8)) continue;
+    const h = (10 + rng() * 14) * sm;
+    const tower = new THREE.Mesh(new THREE.CylinderGeometry(1.5 * sm, 2 * sm, h, 10), wallMat);
+    tower.position.set(pos.x, h / 2, pos.z);
+    tower.castShadow = true;
+    worldGroup.add(tower);
+    placedPositions.push(pos);
+  }
+
+  // Wall segments connecting towers
+  for (let i = 0; i < 4; i++) {
+    const angle = (i / 4) * Math.PI * 2;
+    const dist = 18;
+    const cx = Math.cos(angle) * dist;
+    const cz = Math.sin(angle) * dist;
+    const h = (6 + rng() * 4) * sm;
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(8 * sm, h, 1 * sm), wallMat);
+    wall.position.set(cx, h / 2, cz);
+    wall.rotation.y = angle + Math.PI / 2;
+    wall.castShadow = true;
+    worldGroup.add(wall);
+  }
+
+  // Distant spires silhouettes
+  for (let i = 0; i < 6; i++) {
+    const angle = rng() * Math.PI * 2;
+    const dist = 80 + rng() * 60;
+    const h = (15 + rng() * 30) * sm;
+    const spire = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.5 * sm, 3 * sm, h, 8),
+      new THREE.MeshBasicMaterial({ color: 0x1a1e28, fog: true })
+    );
+    spire.position.set(Math.cos(angle) * dist, h / 2, Math.sin(angle) * dist);
+    worldGroup.add(spire);
+  }
+
+  // Suspended fragments
+  for (let i = 0; i < 4; i++) {
+    const s = (1 + rng() * 2) * sm;
+    const frag = new THREE.Mesh(
+      new THREE.TetrahedronGeometry(s, 0),
+      new THREE.MeshStandardMaterial({ color: 0x8a8580, roughness: 0.7 })
+    );
+    const y = -(2 + rng() * 6);
+    frag.position.set((rng() - 0.5) * 30, y, (rng() - 0.5) * 30);
+    frag.rotation.set(rng() * Math.PI, rng() * Math.PI, rng() * Math.PI);
+    frag.userData.floating = true;
+    floatingGroups.push({ group: frag as unknown as THREE.Group, baseY: y, phase: rng() * Math.PI * 2 });
+    worldGroup.add(frag);
+  }
+}
+
+function buildDreamZone(
+  rng: () => number,
+  semantics: SemanticTags,
+  placedPositions: THREE.Vector3[],
+  sm: number
+): void {
+  if (!worldGroup) return;
+
+  // Central landmark (if nothing else was placed centrally)
+  if (!tooClose(new THREE.Vector3(0, 0, 0), placedPositions, 8)) {
+    const glowMat = new THREE.MeshStandardMaterial({
+      color: 0x6a7aaa, roughness: 0.2,
+      emissive: new THREE.Color(0x4a5a8a), emissiveIntensity: 0.4,
+      transparent: true, opacity: 0.7
+    });
+    const s = (3 + rng() * 4) * sm;
+    const landmark = new THREE.Mesh(new THREE.OctahedronGeometry(s, 0), glowMat);
+    landmark.position.set(0, s + 2, 0);
+    landmark.userData.floating = true;
+    floatingGroups.push({ group: landmark as unknown as THREE.Group, baseY: s + 2, phase: 0 });
+    landmark.userData.interactionTag = "landmark";
+    worldGroup.add(landmark);
+  }
+
+  // Surrounding fragments — repeated motifs
+  const fragMat = new THREE.MeshStandardMaterial({
+    color: 0x8a8580, roughness: 0.7,
+    emissive: new THREE.Color(0x2a2520), emissiveIntensity: 0.15
+  });
+  for (let i = 0; i < 12; i++) {
+    const angle = (i / 12) * Math.PI * 2;
+    const dist = 15 + rng() * 25;
+    const s = (0.8 + rng() * 1.5) * sm;
+    const frag = new THREE.Mesh(new THREE.TetrahedronGeometry(s, 0), fragMat);
+    const y = 1 + rng() * 6;
+    frag.position.set(Math.cos(angle) * dist, y, Math.sin(angle) * dist);
+    frag.rotation.set(rng() * Math.PI, rng() * Math.PI, rng() * Math.PI);
+    frag.userData.floating = true;
+    floatingGroups.push({ group: frag as unknown as THREE.Group, baseY: y, phase: rng() * Math.PI * 2 });
+    worldGroup.add(frag);
+  }
+
+  // Abstract ground forms based on descriptors
+  const formMat = new THREE.MeshStandardMaterial({ color: 0x4a5060, roughness: 0.6 });
+  for (let i = 0; i < 6; i++) {
+    const angle = rng() * Math.PI * 2;
+    const dist = 10 + rng() * 30;
+    const pos = new THREE.Vector3(Math.cos(angle) * dist, 0, Math.sin(angle) * dist);
+    if (tooClose(pos, placedPositions, 6)) continue;
+    const h = (2 + rng() * 5) * sm;
+    const w = (1 + rng() * 2) * sm;
+    const form = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), formMat);
+    form.position.set(pos.x, h / 2, pos.z);
+    form.rotation.y = rng() * Math.PI;
+    form.castShadow = true;
+    worldGroup.add(form);
+    placedPositions.push(pos);
+  }
+}
+
+// ── 14B-D: Dream Composition Rules ───────────────────────────────────
+
+function applyCompositionRules(
+  rng: () => number,
+  world: WorldModel,
+  groupById: GroupMap,
+  placedPositions: THREE.Vector3[],
+  sm: number
+): void {
+  if (!worldGroup) return;
+  const names = new Set(world.entities.map((e) => e.attributes.name));
+  const descriptors = new Set(
+    world.entities.filter((e) => e.type === "descriptor").map((e) => e.attributes.name)
+  );
+
+  // "above" should create real layered composition
+  if (world.relationships.some((r) => r.type === "above")) {
+    // Add visual layering connectors between levels
+    world.relationships.forEach((r) => {
+      if (r.type !== "above") return;
+      const fromGroup = groupById.get(r.from);
+      const toGroup = groupById.get(r.to);
+      if (!fromGroup || !toGroup) return;
+      // Add connecting fragments between the two
+      const fromPos = fromGroup.getWorldPosition(new THREE.Vector3());
+      const toPos = toGroup.getWorldPosition(new THREE.Vector3());
+      const midY = (fromPos.y + toPos.y) / 2;
+      const fragMat = new THREE.MeshStandardMaterial({ color: 0x8a8580, roughness: 0.7 });
+      for (let i = 0; i < 3; i++) {
+        const s = (0.5 + rng() * 1) * sm;
+        const frag = new THREE.Mesh(new THREE.TetrahedronGeometry(s, 0), fragMat);
+        const y = midY + (rng() - 0.5) * (fromPos.y - toPos.y) * 0.4;
+        frag.position.set(
+          (fromPos.x + toPos.x) / 2 + (rng() - 0.5) * 10,
+          y,
+          (fromPos.z + toPos.z) / 2 + (rng() - 0.5) * 10
+        );
+        frag.rotation.set(rng() * Math.PI, rng() * Math.PI, rng() * Math.PI);
+        frag.userData.floating = true;
+        floatingGroups.push({ group: frag as unknown as THREE.Group, baseY: y, phase: rng() * Math.PI * 2 });
+        worldGroup.add(frag);
+      }
+    });
+  }
+
+  // "giant" / "massive" — increase spacing and add scale-emphasizing smaller objects nearby
+  if (descriptors.has("giant") || descriptors.has("massive")) {
+    for (let i = 0; i < 6; i++) {
+      const angle = rng() * Math.PI * 2;
+      const dist = 15 + rng() * 30;
+      const pos = new THREE.Vector3(Math.cos(angle) * dist, 0, Math.sin(angle) * dist);
+      if (tooClose(pos, placedPositions, 4)) continue;
+      // Tiny comparison objects
+      const h = (0.5 + rng() * 1.5) * sm * 0.4;
+      const w = (0.3 + rng() * 0.8) * sm * 0.4;
+      const tiny = new THREE.Mesh(
+        new THREE.BoxGeometry(w, h, w),
+        new THREE.MeshStandardMaterial({ color: 0x5a5a60, roughness: 0.8 })
+      );
+      tiny.position.set(pos.x, h / 2, pos.z);
+      tiny.castShadow = true;
+      worldGroup.add(tiny);
+    }
+  }
+
+  // "endless" — increase horizon population
+  if (descriptors.has("endless")) {
+    for (let i = 0; i < 16; i++) {
+      const angle = (i / 16) * Math.PI * 2 + (rng() - 0.5) * 0.2;
+      const dist = 150 + rng() * 150;
+      const h = (8 + rng() * 25) * sm;
+      const sil = new THREE.Mesh(
+        new THREE.BoxGeometry(4 * sm, h, 4 * sm),
+        new THREE.MeshBasicMaterial({ color: 0x1a1e28, fog: true })
+      );
+      sil.position.set(Math.cos(angle) * dist, h / 2, Math.sin(angle) * dist);
+      worldGroup.add(sil);
+    }
+  }
+
+  // "glowing" — emissive accents in multiple places
+  if (descriptors.has("bright") || names.has("bright")) {
+    const glowMat = new THREE.MeshStandardMaterial({
+      color: 0x88ccff, emissive: new THREE.Color(0x4488aa),
+      emissiveIntensity: 0.5, roughness: 0.2, transparent: true, opacity: 0.6
+    });
+    for (let i = 0; i < 8; i++) {
+      const r = (0.2 + rng() * 0.5) * sm;
+      const orb = new THREE.Mesh(new THREE.SphereGeometry(r, 8, 8), glowMat);
+      const y = 1 + rng() * 8;
+      orb.position.set((rng() - 0.5) * 60, y, (rng() - 0.5) * 60);
+      worldGroup.add(orb);
+    }
+  }
+
+  // "ruined" / "broken" — partial structures and debris
+  if (descriptors.has("ruined") || descriptors.has("shattered") || names.has("ruins")) {
+    const debrisMat = new THREE.MeshStandardMaterial({ color: 0x7a7568, roughness: 0.9 });
+    for (let i = 0; i < 8; i++) {
+      const angle = rng() * Math.PI * 2;
+      const dist = 10 + rng() * 40;
+      const pos = new THREE.Vector3(Math.cos(angle) * dist, 0, Math.sin(angle) * dist);
+      if (tooClose(pos, placedPositions, 5)) continue;
+      const h = (1 + rng() * 3) * sm;
+      const w = (0.5 + rng() * 1.5) * sm;
+      const debris = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), debrisMat);
+      debris.position.set(pos.x, h / 2, pos.z);
+      debris.rotation.z = (rng() - 0.5) * 0.4;
+      debris.rotation.y = rng() * Math.PI;
+      debris.castShadow = true;
+      worldGroup.add(debris);
+    }
+  }
+
+  // "ancient" — weathering / repeated ruin motifs
+  if (descriptors.has("ancient") || descriptors.has("forgotten")) {
+    const darkMat = new THREE.MeshStandardMaterial({ color: 0x6a6560, roughness: 0.9 });
+    for (let i = 0; i < 5; i++) {
+      const angle = rng() * Math.PI * 2;
+      const dist = 15 + rng() * 35;
+      const pos = new THREE.Vector3(Math.cos(angle) * dist, 0, Math.sin(angle) * dist);
+      if (tooClose(pos, placedPositions, 5)) continue;
+      const h = (2 + rng() * 4) * sm;
+      const col = new THREE.Mesh(new THREE.CylinderGeometry(0.4 * sm, 0.6 * sm, h, 8), darkMat);
+      col.position.set(pos.x, h / 2, pos.z);
+      col.rotation.z = (rng() - 0.5) * 0.15;
+      col.castShadow = true;
+      worldGroup.add(col);
+    }
+  }
+
+  // "surreal" / "dreamlike" — impossible compositions
+  if (descriptors.has("surreal") || descriptors.has("inverted") || descriptors.has("mirrored")) {
+    const surrMat = new THREE.MeshStandardMaterial({
+      color: 0x8a6aa0, roughness: 0.2, emissive: new THREE.Color(0x4a2a6a),
+      emissiveIntensity: 0.3, transparent: true, opacity: 0.6
+    });
+    // Floating fragments
+    for (let i = 0; i < 4; i++) {
+      const s = (1 + rng() * 2.5) * sm;
+      const y = 5 + rng() * 15;
+      const shape = new THREE.Mesh(
+        rng() < 0.5 ? new THREE.OctahedronGeometry(s, 0) : new THREE.TetrahedronGeometry(s, 0),
+        surrMat
+      );
+      shape.position.set((rng() - 0.5) * 40, y, (rng() - 0.5) * 40);
+      shape.rotation.set(rng() * Math.PI, rng() * Math.PI, rng() * Math.PI);
+      shape.userData.floating = true;
+      floatingGroups.push({ group: shape as unknown as THREE.Group, baseY: y, phase: rng() * Math.PI * 2 });
+      worldGroup.add(shape);
+    }
+    // Mirrored clusters
+    for (let i = 0; i < 2; i++) {
+      const h = (3 + rng() * 5) * sm;
+      const w = (1 + rng() * 2) * sm;
+      const obj = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), surrMat);
+      const x = 10 + rng() * 20;
+      const z = (rng() - 0.5) * 20;
+      obj.position.set(x, h / 2, z);
+      worldGroup.add(obj);
+      // Offset reflected form
+      const reflected = obj.clone();
+      reflected.position.set(-x + (rng() - 0.5) * 4, h / 2 + (rng() - 0.5) * 2, -z + (rng() - 0.5) * 4);
+      reflected.rotation.y = Math.PI;
+      worldGroup.add(reflected);
+    }
+  }
+}
+
+// ── 14B-F: Landmark and Path Logic ───────────────────────────────────
+
+function placeLandmarksAndPaths(
+  rng: () => number,
+  archetype: EnvironmentArchetype,
+  semantics: SemanticTags,
+  placedPositions: THREE.Vector3[],
+  sm: number
+): void {
+  if (!worldGroup) return;
+
+  // Secondary landmarks visible from spawn (placed ~30-60 units out)
+  const numSecondary = 2 + Math.floor(rng() * 2);
+  for (let i = 0; i < numSecondary; i++) {
+    const angle = (i / numSecondary) * Math.PI * 2 + (rng() - 0.5) * 0.5;
+    const dist = 30 + rng() * 30;
+    const pos = new THREE.Vector3(Math.cos(angle) * dist, 0, Math.sin(angle) * dist);
+    if (tooClose(pos, placedPositions, SCALE.minSpacing)) continue;
+
+    const landmark = createSecondaryLandmark(rng, archetype, sm);
+    landmark.position.copy(pos);
+    landmark.userData.interactionTag = "landmark";
+    landmark.traverse((child: THREE.Object3D) => { child.userData.interactionTag = "landmark"; });
+    worldGroup.add(landmark);
+    placedPositions.push(pos);
+  }
+
+  // Visual path: loose trail of small objects from center outward
+  const pathAngle = rng() * Math.PI * 2;
+  const pathLength = 6 + Math.floor(rng() * 4);
+  const pathMat = new THREE.MeshStandardMaterial({ color: 0x6a6a70, roughness: 0.85 });
+  for (let i = 0; i < pathLength; i++) {
+    const dist = 8 + i * (6 + rng() * 3);
+    const jitterX = (rng() - 0.5) * 3;
+    const jitterZ = (rng() - 0.5) * 3;
+    const px = Math.cos(pathAngle) * dist + jitterX;
+    const pz = Math.sin(pathAngle) * dist + jitterZ;
+    const r = (0.3 + rng() * 0.6) * sm;
+    const stone = new THREE.Mesh(new THREE.DodecahedronGeometry(r, 0), pathMat);
+    stone.position.set(px, r * 0.3, pz);
+    stone.rotation.set(rng() * Math.PI, rng() * Math.PI, 0);
+    worldGroup.add(stone);
+  }
+}
+
+function createSecondaryLandmark(
+  rng: () => number,
+  archetype: EnvironmentArchetype,
+  sm: number
+): THREE.Group {
+  const group = new THREE.Group();
+
+  if (archetype === "floating_city" || archetype === "castle_sky") {
+    // Spire or small tower
+    const h = (8 + rng() * 12) * sm;
+    const mat = new THREE.MeshStandardMaterial({ color: 0x5a6070, roughness: 0.5, metalness: 0.15 });
+    const spire = new THREE.Mesh(new THREE.CylinderGeometry(0.8 * sm, 1.5 * sm, h, 8), mat);
+    spire.position.y = h / 2;
+    spire.castShadow = true;
+    group.add(spire);
+    // Top ornament
+    const top = new THREE.Mesh(
+      new THREE.OctahedronGeometry(1 * sm, 0),
+      new THREE.MeshStandardMaterial({ color: 0x88aacc, emissive: new THREE.Color(0x4466aa), emissiveIntensity: 0.3 })
+    );
+    top.position.y = h + 1;
+    group.add(top);
+  } else if (archetype === "ocean_realm") {
+    // Rock pillar with beacon
+    const h = (6 + rng() * 10) * sm;
+    const rock = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.5 * sm, 2.5 * sm, h, 8),
+      new THREE.MeshStandardMaterial({ color: 0x5a6570, roughness: 0.85 })
+    );
+    rock.position.y = h / 2;
+    rock.castShadow = true;
+    group.add(rock);
+    const beacon = new THREE.Mesh(
+      new THREE.SphereGeometry(0.6 * sm, 8, 8),
+      new THREE.MeshStandardMaterial({ color: 0xffee88, emissive: new THREE.Color(0xffdd44), emissiveIntensity: 0.6 })
+    );
+    beacon.position.y = h + 1;
+    group.add(beacon);
+  } else if (archetype === "forest_ruins") {
+    // Broken monument
+    const h = (4 + rng() * 6) * sm;
+    const mat = new THREE.MeshStandardMaterial({ color: 0x7a7568, roughness: 0.85 });
+    const col = new THREE.Mesh(new THREE.CylinderGeometry(0.5 * sm, 0.7 * sm, h, 10), mat);
+    col.position.y = h / 2;
+    col.rotation.z = (rng() - 0.5) * 0.15;
+    col.castShadow = true;
+    group.add(col);
+    const cap = new THREE.Mesh(new THREE.BoxGeometry(1.5 * sm, 0.5 * sm, 1.5 * sm), mat);
+    cap.position.y = h;
+    group.add(cap);
+  } else if (archetype === "storm_void") {
+    // Floating broken sphere
+    const s = (2 + rng() * 3) * sm;
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x4a5a6a, emissive: new THREE.Color(0x2a3a4a),
+      emissiveIntensity: 0.3, roughness: 0.4
+    });
+    const sphere = new THREE.Mesh(new THREE.IcosahedronGeometry(s, 1), mat);
+    sphere.position.y = 5 + rng() * 10;
+    sphere.userData.floating = true;
+    group.add(sphere);
+  } else {
+    // Default: glowing obelisk
+    const h = (5 + rng() * 8) * sm;
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x6a7aaa, roughness: 0.3,
+      emissive: new THREE.Color(0x3a4a6a), emissiveIntensity: 0.25
+    });
+    const obelisk = new THREE.Mesh(new THREE.BoxGeometry(1 * sm, h, 1 * sm), mat);
+    obelisk.position.y = h / 2;
+    obelisk.castShadow = true;
+    group.add(obelisk);
+  }
+
+  return group;
+}
+
+// ── 14B-G: Background Population ─────────────────────────────────────
+
+function populateBackground(
+  rng: () => number,
+  archetype: EnvironmentArchetype,
+  semantics: SemanticTags,
+  sm: number
+): void {
+  if (!worldGroup) return;
+
+  const count = 14 + Math.floor(rng() * 8);
+
+  for (let i = 0; i < count; i++) {
+    const angle = (i / count) * Math.PI * 2 + (rng() - 0.5) * 0.3;
+    const dist = 180 + rng() * 220;
+
+    const bgGroup = createDistantForm(rng, archetype, sm);
+    bgGroup.position.set(Math.cos(angle) * dist, 0, Math.sin(angle) * dist);
+    worldGroup.add(bgGroup);
+  }
+
+  // Far cloud bands (always, for sky scale)
+  for (let i = 0; i < 6; i++) {
+    const r = (20 + rng() * 40) * sm;
+    const cloudMat = new THREE.MeshBasicMaterial({
+      color: 0x3a3e4a, fog: true, transparent: true, opacity: 0.25
+    });
+    const cloud = new THREE.Mesh(new THREE.SphereGeometry(r, 8, 6), cloudMat);
+    cloud.scale.y = 0.08;
+    cloud.position.set(
+      (rng() - 0.5) * 400,
+      30 + rng() * 40,
+      (rng() - 0.5) * 400
+    );
+    worldGroup.add(cloud);
+  }
+}
+
+function createDistantForm(
+  rng: () => number,
+  archetype: EnvironmentArchetype,
+  sm: number
+): THREE.Group {
+  const group = new THREE.Group();
+  const darkMat = new THREE.MeshBasicMaterial({ color: 0x1a1e28, fog: true });
+
+  if (archetype === "floating_city") {
+    // Distant city silhouettes
+    const count = 4 + Math.floor(rng() * 5);
+    for (let i = 0; i < count; i++) {
+      const w = (3 + rng() * 5) * sm;
+      const h = (10 + rng() * 35) * sm;
+      const building = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), darkMat);
+      building.position.set((rng() - 0.5) * 40, h / 2, (rng() - 0.5) * 20);
+      group.add(building);
+    }
+  } else if (archetype === "ocean_realm") {
+    // Distant islands / towers
+    const roll = rng();
+    if (roll < 0.5) {
+      const h = (5 + rng() * 15) * sm;
+      const r = (4 + rng() * 8) * sm;
+      const rock = new THREE.Mesh(new THREE.ConeGeometry(r, h, 6), darkMat);
+      rock.position.y = h / 2;
+      group.add(rock);
+    } else {
+      const h = (15 + rng() * 30) * sm;
+      const tower = new THREE.Mesh(new THREE.CylinderGeometry(1.5 * sm, 3 * sm, h, 8), darkMat);
+      tower.position.y = h / 2;
+      group.add(tower);
+    }
+  } else if (archetype === "forest_ruins") {
+    // Distant tree lines + ruin outlines
+    const count = 2 + Math.floor(rng() * 3);
+    for (let i = 0; i < count; i++) {
+      const h = (12 + rng() * 20) * sm;
+      const tree = new THREE.Mesh(new THREE.ConeGeometry(5 * sm, h, 6), new THREE.MeshBasicMaterial({ color: 0x0a1a0a, fog: true }));
+      tree.position.set((rng() - 0.5) * 30, h / 2, (rng() - 0.5) * 15);
+      group.add(tree);
+    }
+    if (rng() < 0.5) {
+      const h = (6 + rng() * 10) * sm;
+      const w = (2 + rng() * 4) * sm;
+      const ruin = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), darkMat);
+      ruin.position.set((rng() - 0.5) * 20, h / 2, (rng() - 0.5) * 10);
+      ruin.rotation.z = (rng() - 0.5) * 0.1;
+      group.add(ruin);
+    }
+  } else if (archetype === "storm_void") {
+    // Sparse dark shapes
+    const h = (8 + rng() * 20) * sm;
+    const shape = rng() < 0.5
+      ? new THREE.Mesh(new THREE.ConeGeometry(4 * sm, h, 6), darkMat)
+      : new THREE.Mesh(new THREE.BoxGeometry(3 * sm, h, 3 * sm), darkMat);
+    shape.position.y = h / 2;
+    group.add(shape);
+  } else if (archetype === "surreal_desert") {
+    // Mirrored distant monoliths
+    const h = (10 + rng() * 25) * sm;
+    const w = (2 + rng() * 4) * sm;
+    const monolith = new THREE.Mesh(new THREE.BoxGeometry(w, h, w * 0.4), darkMat);
+    monolith.position.y = h / 2;
+    group.add(monolith);
+    // Ghost duplicate
+    const ghost = new THREE.Mesh(
+      new THREE.BoxGeometry(w, h, w * 0.4),
+      new THREE.MeshBasicMaterial({ color: 0x1a1030, fog: true, transparent: true, opacity: 0.4 })
+    );
+    ghost.position.set((rng() - 0.5) * 20, h / 2, (rng() - 0.5) * 10);
+    ghost.rotation.y = Math.PI;
+    group.add(ghost);
+  } else if (archetype === "castle_sky") {
+    // Distant towers and mountain peaks
+    const roll = rng();
+    if (roll < 0.5) {
+      const h = (20 + rng() * 40) * sm;
+      const spire = new THREE.Mesh(new THREE.CylinderGeometry(1.5 * sm, 3 * sm, h, 8), darkMat);
+      spire.position.y = h / 2;
+      group.add(spire);
+    } else {
+      const h = (25 + rng() * 40) * sm;
+      const r = (10 + rng() * 15) * sm;
+      const mountain = new THREE.Mesh(new THREE.ConeGeometry(r, h, 8), darkMat);
+      mountain.position.y = h / 2;
+      group.add(mountain);
+    }
+  } else {
+    // dream_zone: abstract distant forms
+    const s = (6 + rng() * 15) * sm;
+    const shape = rng() < 0.5
+      ? new THREE.Mesh(new THREE.OctahedronGeometry(s, 0), new THREE.MeshBasicMaterial({ color: 0x1a1030, fog: true, transparent: true, opacity: 0.5 }))
+      : new THREE.Mesh(new THREE.ConeGeometry(s * 0.6, s * 2, 6), darkMat);
+    shape.position.y = s;
+    group.add(shape);
   }
 
   return group;
