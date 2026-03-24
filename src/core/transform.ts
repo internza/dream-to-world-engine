@@ -10,10 +10,21 @@ export interface WorldEntity {
   attributes: { name: string };
 }
 
+// ── Environment archetypes (Iter 14B) ────────────────────────────────
+export type EnvironmentArchetype =
+  | "floating_city"
+  | "ocean_realm"
+  | "forest_ruins"
+  | "storm_void"
+  | "surreal_desert"
+  | "castle_sky"
+  | "dream_zone";
+
 export interface WorldModel {
   entities: WorldEntity[];
   relationships: WorldRelation[];
   semantics: SemanticTags;
+  archetype: EnvironmentArchetype;
 }
 
 // ── Environment / mood / tag types (expanded Iter 16) ────────────────
@@ -419,6 +430,7 @@ export function transformDreamToWorld(dream: string): WorldModel {
   }
 
   const semantics = inferSemantics(entities);
+  const archetype = resolveEnvironmentArchetype(entities, relationships, semantics);
 
   // ── Build and store debug info ────────────────────────────────────
   const familyInfo: Array<{ name: string; family: string }> = [];
@@ -432,7 +444,67 @@ export function transformDreamToWorld(dream: string): WorldModel {
 
   logParseDebug(debugTokens, semantics);
 
-  return { entities, relationships, semantics };
+  return { entities, relationships, semantics, archetype };
+}
+
+// ── Environment archetype resolution (Iter 14B) ──────────────────────
+function resolveEnvironmentArchetype(
+  entities: WorldEntity[],
+  relationships: WorldRelation[],
+  semantics: SemanticTags
+): EnvironmentArchetype {
+  const names = new Set(entities.map((e) => e.attributes.name));
+  const descriptors = new Set(
+    entities.filter((e) => e.type === "descriptor").map((e) => e.attributes.name)
+  );
+
+  const hasAboveRelation = (from: string, to: string): boolean =>
+    relationships.some((r) => {
+      if (r.type !== "above") return false;
+      const fromName = entities.find((e) => e.id === r.from)?.attributes.name;
+      const toName = entities.find((e) => e.id === r.to)?.attributes.name;
+      return fromName === from && toName === to;
+    });
+
+  const hasName = (...ns: string[]) => ns.some((n) => names.has(n));
+  const hasDesc = (...ds: string[]) => ds.some((d) => descriptors.has(d));
+
+  // floating_city: city + clouds/sky + floating
+  if (hasName("city") && (hasDesc("floating") || hasName("clouds", "sky"))) return "floating_city";
+  if (hasName("city") && hasAboveRelation("city", "clouds")) return "floating_city";
+
+  // castle_sky: castle + sky/clouds/above
+  if (hasName("castle") && (hasName("sky", "clouds") || hasDesc("floating"))) return "castle_sky";
+  if (hasName("castle") && hasName("ocean") && hasAboveRelation("castle", "ocean")) return "castle_sky";
+
+  // ocean_realm: ocean/sea + structures/islands
+  if (hasName("ocean", "sea", "lake") && (hasName("castle", "island", "ruins", "tower", "temple"))) return "ocean_realm";
+  if (hasName("ocean", "sea") && semantics.environment === "ocean") return "ocean_realm";
+
+  // forest_ruins: forest + ruins/ancient/temple
+  if (hasName("forest", "jungle", "garden") && (hasName("ruins", "temple") || hasDesc("ancient", "ruined"))) return "forest_ruins";
+
+  // storm_void: storm/thunder + void/dark/broken
+  if ((hasDesc("storm", "thunder") || semantics.weather === "storm") && (hasName("void") || hasDesc("dark", "broken", "shattered"))) return "storm_void";
+  if (semantics.environment === "storm") return "storm_void";
+
+  // surreal_desert: desert + surreal/dreamlike modifiers
+  if (hasName("desert") && (hasDesc("surreal", "endless", "mirrored", "inverted"))) return "surreal_desert";
+  if (hasName("desert") && semantics.surreality !== "normal") return "surreal_desert";
+
+  // Broader fallback matches based on primary environment
+  if (hasName("city") || semantics.environment === "city") {
+    if (hasDesc("floating") || semantics.verticality === "high") return "floating_city";
+  }
+  if (semantics.environment === "ocean" || semantics.environment === "coastal") return "ocean_realm";
+  if (semantics.environment === "forest") {
+    if (hasName("ruins") || hasDesc("ancient", "ruined")) return "forest_ruins";
+  }
+  if (semantics.environment === "desert") return "surreal_desert";
+  if (semantics.environment === "sky") return "floating_city";
+  if (hasName("castle") || (semantics.environment === "mountain" && hasName("castle"))) return "castle_sky";
+
+  return "dream_zone";
 }
 
 // ── Semantic tag inference (expanded Iter 16) ─────────────────────────
@@ -581,7 +653,7 @@ export function debugLastParse(dream: string): TokenDebug[] {
   return result;
 }
 
-// ── Structured grammar-based random dream generator (Iter 16) ────────
+// ── Structured grammar-based random dream generator (Iter 14B upgrade) ─
 
 const G_PLACES = [
   "ocean", "city", "forest", "ruins", "mountains", "desert", "castle",
@@ -611,9 +683,14 @@ const G_OBJECTS = [
   "dome", "arch", "skull", "bell", "cage", "campfire",
   "windmill", "vine", "mushroom", "steeple"
 ];
+const G_OBJECTS_PLURAL = [
+  "towers", "bridges", "pillars", "fragments", "statues", "monuments",
+  "gates", "columns", "lanterns", "crystals", "stones", "spires",
+  "arches", "walls", "domes", "pyramids", "bells", "cages"
+];
 const G_SCALES = [
   "giant", "massive", "tiny", "endless", "colossal", "towering",
-  "miniature", "vast", "sprawling", "immense"
+  "miniature", "vast", "sprawling", "immense", "hidden"
 ];
 const G_MOODS = [
   "serene", "ominous", "mystical", "haunting", "tranquil",
@@ -647,75 +724,114 @@ const G_SURREAL = [
   "crumbling into the sky", "surrounded by floating debris",
   "whispering forgotten names", "where time moves differently",
   "shrouded in purple light", "bleeding color into the void",
-  "folding in on itself", "that exists between dreams"
+  "folding in on itself", "that exists between dreams",
+  "drifting between worlds", "suspended in amber light"
+];
+const G_SURREAL_MODIFIERS = [
+  "inverted", "drifting", "suspended", "whispering", "mirrored",
+  "melting", "kaleidoscopic", "pulsing", "shimmering", "twisted"
+];
+const G_ATMOSPHERE = [
+  "storm", "rain", "sunset", "twilight", "moonlight", "fog",
+  "aurora", "thunder", "snow", "wind"
 ];
 
-// ── Template patterns ─────────────────────────────────────────────────
+// ── Template patterns (Iter 14B: 4-7 semantic parts per dream) ────────
 interface DreamTemplate {
   weight: number;
   build: (pick: <T>(arr: T[]) => T, maybe: (p: number) => boolean) => string;
 }
 
 const DREAM_TEMPLATES: DreamTemplate[] = [
-  // Pattern 1: scale + descriptor + place + above/beside + descriptor + place + time
+  // Pattern 1: [scale] [descriptor] [place] [relation] [place] during [atmosphere] with [objects]
   { weight: 3, build: (pick, maybe) => {
-    let s = `A ${maybe(0.4) ? pick(G_SCALES) + " " : ""}${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
+    let s = `A ${pick(G_SCALES)} ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
     s += ` above a ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
-    if (maybe(0.6)) s += ` during a ${pick(G_WEATHER)} ${pick(G_TIMES).replace("at ", "")}`;
-    if (maybe(0.3)) s += ` ${pick(G_SURREAL)}`;
+    s += ` during a ${pick(G_ATMOSPHERE)}`;
+    if (maybe(0.6)) s += ` with ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS_PLURAL)}`;
+    if (maybe(0.4)) s += ` and ${pick(G_ENV_FEATURES)}`;
     return s;
   }},
-  // Pattern 2: descriptor + objects + surrounding + place + env feature
-  { weight: 2, build: (pick, maybe) => {
-    let s = `${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS)} surrounding a ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
-    if (maybe(0.5)) s += ` beside ${pick(G_ENV_FEATURES)}`;
-    if (maybe(0.4)) s += ` ${pick(G_TIMES)}`;
-    return s;
-  }},
-  // Pattern 3: mood + place + filled with + descriptor + objects + sky
+  // Pattern 2: [descriptor] [place] above [descriptor] [place] with [objects] and [mood]
   { weight: 3, build: (pick, maybe) => {
-    let s = `A ${pick(G_MOODS)} ${pick(G_PLACES)} filled with ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS)}`;
-    s += ` under a ${pick(G_DESCRIPTORS)} sky`;
+    let s = `A ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)} above a ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
+    s += ` with ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS_PLURAL)}`;
+    if (maybe(0.6)) s += ` and ${pick(G_SURREAL_MODIFIERS)} ${pick(G_OBJECTS)}`;
+    if (maybe(0.5)) s += ` ${pick(G_TIMES)}`;
+    return s;
+  }},
+  // Pattern 3: [adjective] [environment] with [landmark], [weather], and [surreal modifier]
+  { weight: 3, build: (pick, maybe) => {
+    let s = `A ${pick(G_MOODS)} ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
+    s += ` with ${pick(G_MATERIALS)} ${pick(G_OBJECTS)}`;
+    s += ` and ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS_PLURAL)}`;
+    if (maybe(0.6)) s += ` during ${pick(G_ATMOSPHERE)}`;
     if (maybe(0.4)) s += ` ${pick(G_SURREAL)}`;
     return s;
   }},
-  // Pattern 4: surreal + place + material objects + weather
+  // Pattern 4: complex layered — object + object inside environment + features
   { weight: 2, build: (pick, maybe) => {
-    let s = `A ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)} with ${pick(G_MATERIALS)} ${pick(G_OBJECTS)}`;
-    if (maybe(0.6)) s += ` and ${pick(G_ENV_FEATURES)}`;
-    if (maybe(0.5)) s += ` in ${pick(G_WEATHER)}`;
-    if (maybe(0.3)) s += ` ${pick(G_SURREAL)}`;
-    return s;
-  }},
-  // Pattern 5: structure inside place + env feature
-  { weight: 2, build: (pick, maybe) => {
-    let s = `An ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS)} inside a ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
+    let s = `${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS_PLURAL)} and ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS)}`;
+    s += ` in a ${pick(G_SCALES)} ${pick(G_PLACES)}`;
+    s += ` beside a ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
     if (maybe(0.5)) s += ` with ${pick(G_ENV_FEATURES)}`;
-    if (maybe(0.4)) s += ` ${pick(G_TIMES)}`;
+    if (maybe(0.4)) s += ` ${pick(G_SURREAL)}`;
     return s;
   }},
-  // Pattern 6: two places connected
+  // Pattern 5: surreal place + material objects + weather + surreal clause
+  { weight: 2, build: (pick, maybe) => {
+    let s = `A ${pick(G_SURREAL_MODIFIERS)} ${pick(G_PLACES)} with ${pick(G_MATERIALS)} ${pick(G_OBJECTS_PLURAL)}`;
+    s += ` and ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS)}`;
+    if (maybe(0.6)) s += ` surrounded by ${pick(G_ENV_FEATURES)}`;
+    s += ` ${pick(G_TIMES)}`;
+    if (maybe(0.4)) s += ` ${pick(G_SURREAL)}`;
+    return s;
+  }},
+  // Pattern 6: two places connected with rich detail
   { weight: 2, build: (pick, maybe) => {
     const rel = pick(["above", "beside", "across", "beyond"]);
-    let s = `A ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)} ${rel} a ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
-    if (maybe(0.5)) s += ` with ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS)}`;
-    if (maybe(0.4)) s += ` ${pick(G_TIMES)}`;
+    let s = `A ${pick(G_SCALES)} ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
+    s += ` ${rel} a ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
+    s += ` with ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS_PLURAL)}`;
+    if (maybe(0.5)) s += ` and ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS)}`;
+    if (maybe(0.4)) s += ` during ${pick(G_ATMOSPHERE)}`;
     if (maybe(0.3)) s += ` ${pick(G_SURREAL)}`;
     return s;
   }},
-  // Pattern 7: simple atmospheric
+  // Pattern 7: environment + multiple objects + atmosphere
+  { weight: 2, build: (pick, maybe) => {
+    let s = `A ${pick(G_MOODS)} ${pick(G_PLACES)} filled with ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS_PLURAL)}`;
+    s += ` and ${pick(G_MATERIALS)} ${pick(G_OBJECTS)}`;
+    s += ` under a ${pick(G_DESCRIPTORS)} sky`;
+    if (maybe(0.5)) s += ` during ${pick(G_ATMOSPHERE)}`;
+    if (maybe(0.3)) s += ` ${pick(G_SURREAL)}`;
+    return s;
+  }},
+  // Pattern 8: massive scene — 6-7 parts
   { weight: 1, build: (pick, maybe) => {
-    let s = `A ${pick(G_MOODS)} ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
-    if (maybe(0.7)) s += ` ${pick(G_TIMES)}`;
+    let s = `A ${pick(G_SCALES)} ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
+    s += ` above a ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
+    s += ` with ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS_PLURAL)}`;
+    s += ` and ${pick(G_MATERIALS)} ${pick(G_OBJECTS)}`;
+    s += ` during a ${pick(G_ATMOSPHERE)} ${pick(G_TIMES).replace("at ", "")}`;
     if (maybe(0.5)) s += ` ${pick(G_SURREAL)}`;
     return s;
   }},
-  // Pattern 8: complex multi-element
+  // Pattern 9: surreal-heavy dream
+  { weight: 1, build: (pick) => {
+    let s = `A ${pick(G_SURREAL_MODIFIERS)} ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
+    s += ` with ${pick(G_SURREAL_MODIFIERS)} ${pick(G_OBJECTS_PLURAL)}`;
+    s += ` beside ${pick(G_ENV_FEATURES)}`;
+    s += ` ${pick(G_SURREAL)}`;
+    return s;
+  }},
+  // Pattern 10: structure inside place + objects + env features
   { weight: 1, build: (pick, maybe) => {
-    let s = `${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS)} and ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS)}`;
-    s += ` in a ${pick(G_SCALES)} ${pick(G_PLACES)}`;
-    if (maybe(0.5)) s += ` surrounded by ${pick(G_ENV_FEATURES)}`;
-    if (maybe(0.4)) s += ` ${pick(G_SURREAL)}`;
+    let s = `A ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS)} inside a ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
+    s += ` with ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS_PLURAL)}`;
+    if (maybe(0.6)) s += ` and ${pick(G_ENV_FEATURES)}`;
+    if (maybe(0.5)) s += ` ${pick(G_TIMES)}`;
+    if (maybe(0.3)) s += ` during ${pick(G_ATMOSPHERE)}`;
     return s;
   }},
 ];
