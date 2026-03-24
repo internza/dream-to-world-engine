@@ -1,4 +1,4 @@
-import { transformDreamToWorld, generateRandomDream } from "../core/transform.js";
+import { transformDreamToWorld, generateRandomDream, getLastParseDebug } from "../core/transform.js";
 import type { WorldModel } from "../core/transform.js";
 import { initRenderer, renderWorld, setControlsEnabled, toggleCameraMode, getCameraMode } from "./renderer.js";
 import { startAmbient, toggleMute, startWindLayer, stopWindLayer, resolveAmbientProfile } from "./audio.js";
@@ -163,3 +163,148 @@ if (randomBtn) {
 }
 
 // No auto-generation on load — wait for user input
+
+// ── Dream Memory (Scope H) ───────────────────────────────────────────
+const DREAM_HISTORY_KEY = "dtwe_dream_history";
+const MAX_HISTORY = 50;
+
+interface DreamHistoryEntry {
+  dream: string;
+  environment: string;
+  timestamp: number;
+}
+
+function loadDreamHistory(): DreamHistoryEntry[] {
+  try {
+    const raw = localStorage.getItem(DREAM_HISTORY_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed;
+  } catch {
+    return [];
+  }
+}
+
+function saveDreamToHistory(dream: string, environment: string): void {
+  try {
+    const history = loadDreamHistory();
+    // Avoid exact duplicates of the most recent entry
+    if (history.length > 0 && history[history.length - 1].dream === dream) return;
+    history.push({ dream, environment, timestamp: Date.now() });
+    if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
+    localStorage.setItem(DREAM_HISTORY_KEY, JSON.stringify(history));
+  } catch { /* localStorage may be unavailable */ }
+}
+
+// Concept frequency — counts how often each canonical concept appears across dreams
+const CONCEPT_FREQ_KEY = "dtwe_concept_freq";
+
+function updateConceptFrequency(world: WorldModel): void {
+  try {
+    const raw = localStorage.getItem(CONCEPT_FREQ_KEY);
+    const freq: Record<string, number> = raw ? JSON.parse(raw) : {};
+    for (const entity of world.entities) {
+      const name = entity.attributes.name;
+      freq[name] = (freq[name] || 0) + 1;
+    }
+    localStorage.setItem(CONCEPT_FREQ_KEY, JSON.stringify(freq));
+  } catch { /* ok */ }
+}
+
+// Hook memory into generation pipeline
+const _origGetCachedWorld = getCachedWorld;
+function getCachedWorldWithMemory(dream: string): WorldModel {
+  const world = _origGetCachedWorld(dream);
+  return world;
+}
+
+// Patch generateWorld to save history
+const _origGenerate = generateWorld;
+async function generateWorldWithMemory(dreamText: string): Promise<void> {
+  await _origGenerate(dreamText);
+  const sanitized = sanitizeDreamInput(dreamText);
+  if (sanitized) {
+    const world = dreamCache.get(sanitized.toLowerCase().trim());
+    if (world) {
+      saveDreamToHistory(sanitized, world.semantics.environment);
+      updateConceptFrequency(world);
+      updateDebugPanel();
+    }
+  }
+}
+
+// Re-wire event handlers to use memory-enhanced generation
+button.removeEventListener("click", () => {});
+button.addEventListener("click", () => {
+  generateWorldWithMemory(input.value.trim());
+});
+
+// ── Debug Panel (Scope I) ────────────────────────────────────────────
+const debugEnabled = new URLSearchParams(window.location.search).has("debug");
+
+function createDebugPanel(): HTMLElement | null {
+  if (!debugEnabled) return null;
+  const panel = document.createElement("div");
+  panel.id = "debug-panel";
+  panel.style.cssText = `
+    position: fixed; bottom: 0; right: 0; width: 360px; max-height: 40vh;
+    overflow-y: auto; background: rgba(0,0,0,0.85); color: #aaffaa;
+    font: 11px/1.5 monospace; padding: 8px 12px; z-index: 9999;
+    border-top-left-radius: 6px; pointer-events: auto;
+  `;
+  panel.innerHTML = "<strong>Debug Panel (Iter 16)</strong><br><em>Generate a dream to see parse info</em>";
+  document.body.appendChild(panel);
+  return panel;
+}
+
+const debugPanel = createDebugPanel();
+
+function updateDebugPanel(): void {
+  if (!debugPanel) return;
+  const info = getLastParseDebug();
+  if (!info) {
+    debugPanel.innerHTML = "<strong>Debug Panel</strong><br><em>No parse data yet</em>";
+    return;
+  }
+
+  const lines: string[] = [];
+  lines.push("<strong>Debug Panel (Iter 16)</strong>");
+  lines.push(`<b>Tokens:</b>`);
+  for (const t of info.tokens) {
+    lines.push(`&nbsp;&nbsp;${escapeHtml(t.original)} → ${escapeHtml(t.canonical)} [${t.type}]`);
+  }
+  lines.push(`<b>Families:</b>`);
+  for (const f of info.generatorFamilies) {
+    lines.push(`&nbsp;&nbsp;${escapeHtml(f.name)} → ${f.family}`);
+  }
+  lines.push(`<b>Semantics:</b>`);
+  if (info.semantics) {
+    for (const [k, v] of Object.entries(info.semantics)) {
+      if (v) lines.push(`&nbsp;&nbsp;${k}: ${v}`);
+    }
+  }
+  // Show concept frequency from localStorage
+  try {
+    const raw = localStorage.getItem(CONCEPT_FREQ_KEY);
+    if (raw) {
+      const freq = JSON.parse(raw) as Record<string, number>;
+      const sorted = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 10);
+      if (sorted.length) {
+        lines.push(`<b>Top concepts:</b>`);
+        for (const [name, count] of sorted) {
+          lines.push(`&nbsp;&nbsp;${name}: ${count}`);
+        }
+      }
+    }
+  } catch { /* ok */ }
+  // Dream history count
+  const history = loadDreamHistory();
+  lines.push(`<b>Dream history:</b> ${history.length} entries`);
+
+  debugPanel.innerHTML = lines.join("<br>");
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}

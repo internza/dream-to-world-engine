@@ -1,7 +1,8 @@
 import { canonicalizeToken } from "./knowledge.js";
+import type { GeneratorFamily } from "./knowledge.js";
 
 export type EntityType = "place" | "object" | "descriptor" | "unknown";
-export type RelationType = "modifies" | "located_in" | "above";
+export type RelationType = "modifies" | "located_in" | "above" | "beside" | "across" | "inside";
 
 export interface WorldEntity {
   id: string;
@@ -15,11 +16,21 @@ export interface WorldModel {
   semantics: SemanticTags;
 }
 
-export type EnvironmentType = "ocean" | "forest" | "city" | "sky" | "void" | "mountain" | "desert" | "generic";
+// ── Environment / mood / tag types (expanded Iter 16) ────────────────
+export type EnvironmentType =
+  | "ocean" | "forest" | "city" | "sky" | "void" | "mountain"
+  | "desert" | "generic" | "coastal" | "cave" | "frozen"
+  | "storm" | "celestial" | "ruins" | "surreal";
+
 export type MoodType = "calm" | "dark" | "dreamlike" | "chaotic" | "mystical";
 export type TimeOfDay = "day" | "sunset" | "night";
-export type WeatherType = "clear" | "cloudy" | "rain" | "storm" | "snow";
+export type WeatherType = "clear" | "cloudy" | "rain" | "storm" | "snow" | "fog" | "wind" | "aurora";
 export type ScaleType = "normal" | "giant" | "tiny" | "endless";
+export type DensityPreset = "sparse" | "balanced" | "dense" | "endless";
+export type SurrealityLevel = "normal" | "heightened" | "extreme";
+export type DangerLevel = "calm" | "neutral" | "tense" | "dangerous";
+export type MaterialEmphasis = "none" | "crystal" | "metal" | "stone" | "organic" | "glass" | "emissive";
+export type VerticalityLevel = "low" | "medium" | "high";
 
 export interface SemanticTags {
   environment: EnvironmentType;
@@ -27,6 +38,11 @@ export interface SemanticTags {
   time: TimeOfDay;
   weather: WeatherType;
   scale: ScaleType;
+  density: DensityPreset;
+  surreality: SurrealityLevel;
+  danger: DangerLevel;
+  materialEmphasis: MaterialEmphasis;
+  verticality: VerticalityLevel;
 }
 
 export interface WorldRelation {
@@ -43,6 +59,12 @@ export interface TokenDebug {
   type: EntityType;
 }
 
+export interface ParseDebugInfo {
+  tokens: TokenDebug[];
+  semantics: SemanticTags;
+  generatorFamilies: Array<{ name: string; family: string }>;
+}
+
 const STOPWORDS = new Set([
   "i", "am", "is", "are", "was", "were", "a", "an", "the",
   "and", "or", "but", "at", "in", "on", "of", "to", "with",
@@ -50,14 +72,17 @@ const STOPWORDS = new Set([
   "across", "between", "over", "around", "from", "that", "there",
   "here", "some", "my", "their", "its", "very", "been", "like",
   "than", "then", "not", "so", "just", "all", "it", "up", "down",
-  "out", "had", "has", "have", "would", "could", "should"
+  "out", "had", "has", "have", "would", "could", "should",
+  "inside", "beyond", "surrounded"
 ]);
 
-// Structural words used for relationship inference – not removed during
-// tokenization so that we can detect "above", "under", "in", "at".
-const RELATION_WORDS = new Set(["above", "below", "under", "in", "at"]);
+// Structural words used for relationship inference
+const RELATION_WORDS = new Set([
+  "above", "below", "under", "in", "at",
+  "beside", "near", "across", "inside", "beyond", "surrounded"
+]);
 
-// Conjunctions / prepositions that break noun phrases but don't become entities.
+// Conjunctions / prepositions that break noun phrases but don't become entities
 const PHRASE_BREAKERS = new Set(["and", "or", "with", "but"]);
 
 export function normalizeDream(dream: string): string {
@@ -72,7 +97,6 @@ export function tokenizeDream(dream: string): string[] {
   const normalized = normalizeDream(dream);
   const matches = normalized.match(/[a-z]+/g);
   if (!matches) return [];
-
   return matches.filter((word) => !STOPWORDS.has(word));
 }
 
@@ -83,7 +107,10 @@ export function classifyWord(word: string): EntityType {
     "space", "room", "street", "house", "clouds", "castle",
     "garden", "cave", "lake", "river", "island", "village",
     "temple", "sea", "field", "valley", "jungle", "palace",
-    "sky", "void", "realm", "cliff", "canyon"
+    "sky", "void", "realm", "cliff", "canyon", "harbor",
+    "plaza", "bazaar", "marsh", "glacier", "tundra", "oasis",
+    "arena", "library", "crypt", "dungeon", "dreamscape",
+    "volcano", "plateau", "reef", "rooftop"
   ];
   const objects = [
     "tower", "towers", "ship", "car", "door", "tree", "trees",
@@ -92,7 +119,12 @@ export function classifyWord(word: string): EntityType {
     "bridge", "bridges", "wall", "walls", "gate", "gates",
     "statue", "statues", "pillar", "pillars", "column", "columns",
     "orb", "throne", "altar", "sword", "monument", "lantern",
-    "lamp", "spire", "spires"
+    "lamp", "spire", "spires", "mirror", "stairs", "platform",
+    "fountain", "cage", "chain", "skull", "bone", "bell",
+    "lighthouse", "windmill", "pyramid", "dome", "arch",
+    "vine", "root", "mushroom", "flower", "flag", "crown",
+    "book", "mask", "ring", "anchor", "campfire", "steeple",
+    "window", "clock", "key"
   ];
   const descriptors = [
     "floating", "jacked", "dark", "bright", "glowing", "ruined",
@@ -103,7 +135,14 @@ export function classifyWord(word: string): EntityType {
     "spectral", "lost", "small", "rain", "rainy",
     "storm", "stormy", "thunder", "snow", "snowy",
     "night", "moon", "stars", "starry", "sun", "sunny",
-    "sunset", "dusk", "dawn", "surreal", "mystical", "dreamlike", "cosmic"
+    "sunset", "dusk", "dawn", "surreal", "mystical", "dreamlike", "cosmic",
+    "tiny", "crimson", "emerald", "azure", "ivory", "copper",
+    "shimmering", "twisted", "shattered", "hollow", "submerged",
+    "overgrown", "petrified", "dusty", "rusty", "cursed", "forgotten",
+    "haunted", "whispering", "pulsing", "inverted", "mirrored",
+    "kaleidoscopic", "melting", "wooden", "marble", "organic",
+    "mechanical", "ornate", "wind", "fog", "aurora", "eclipse",
+    "comet"
   ];
 
   if (places.includes(word)) return "place";
@@ -119,26 +158,20 @@ function resolveToken(raw: string): { canonical: string; type: EntityType } {
   if (kb.type) {
     return { canonical: kb.canonical, type: kb.type };
   }
-  // Knowledge base didn't know it — fall back to legacy classifier
   const legacy = classifyWord(raw);
   if (legacy !== "unknown") {
     return { canonical: raw, type: legacy };
   }
-  // Try classifying the canonical form too (handles plural stripping etc.)
   const legacyCanonical = classifyWord(kb.canonical);
   return { canonical: kb.canonical, type: legacyCanonical };
 }
 
 // ── Phrase grouping helpers ───────────────────────────────────────────
-// After canonicalization, we walk the token stream and group descriptor
-// stacks that precede a noun. Each descriptor in the stack will point to
-// that noun via a "modifies" relationship.
 
 interface CanonToken {
   raw: string;
   canonical: string;
   type: EntityType;
-  /** Index in the original allTokens array */
   sourceIndex: number;
 }
 
@@ -148,8 +181,6 @@ function buildCanonTokens(allTokens: string[]): CanonToken[] {
     const raw = allTokens[i];
     if (STOPWORDS.has(raw) && !RELATION_WORDS.has(raw) && !PHRASE_BREAKERS.has(raw)) continue;
     if (RELATION_WORDS.has(raw) || PHRASE_BREAKERS.has(raw)) {
-      // Keep structural / boundary words in the stream so we can detect
-      // phrase breaks and relationships, but they won't become entities.
       result.push({ raw, canonical: raw, type: "unknown", sourceIndex: i });
       continue;
     }
@@ -158,6 +189,10 @@ function buildCanonTokens(allTokens: string[]): CanonToken[] {
   }
   return result;
 }
+
+// ── Last parse debug info (stored for programmatic access) ───────────
+let _lastParseDebug: ParseDebugInfo | null = null;
+export function getLastParseDebug(): ParseDebugInfo | null { return _lastParseDebug; }
 
 // ── Main transform function ───────────────────────────────────────────
 
@@ -171,7 +206,6 @@ export function transformDreamToWorld(dream: string): WorldModel {
   const seenCanonical = new Set<string>();
   const entityByCanonical = new Map<string, WorldEntity>();
 
-  // Debug array — populated always, logged only in dev
   const debugTokens: TokenDebug[] = [];
 
   // ── Phase 1: Create entities (deduplicated by canonical name) ────
@@ -192,10 +226,7 @@ export function transformDreamToWorld(dream: string): WorldModel {
   }
 
   // ── Phase 2: Phrase grouping — descriptor stacks modify next noun ─
-  // Walk canonical tokens; collect consecutive descriptors (and nouns
-  // acting as modifiers before another noun) and bind them all to the
-  // final noun in the phrase.
-  const usedDescriptors = new Set<string>(); // track descriptors already bound by grouping
+  const usedDescriptors = new Set<string>();
   {
     const pendingModifiers: string[] = [];
     for (let ci = 0; ci < canonTokens.length; ci++) {
@@ -209,22 +240,18 @@ export function transformDreamToWorld(dream: string): WorldModel {
         continue;
       }
       if (ct.type === "place" || ct.type === "object") {
-        // Peek ahead: is the next content token also a noun?
         let nextIsNoun = false;
         for (let j = ci + 1; j < canonTokens.length; j++) {
           const nxt = canonTokens[j];
           if (RELATION_WORDS.has(nxt.canonical)) break;
           if (nxt.type === "descriptor") { nextIsNoun = false; break; }
           if (nxt.type === "place" || nxt.type === "object") { nextIsNoun = true; break; }
-          break; // unknown — stop
+          break;
         }
 
         if (nextIsNoun) {
-          // This noun is a pre-modifier (e.g. "stone" in "stone fragments",
-          // "crystal" in "crystal skyscrapers"). Queue it.
           pendingModifiers.push(ct.canonical);
         } else {
-          // This is the target noun — bind all queued modifiers to it.
           const target = entityByCanonical.get(ct.canonical);
           if (target && pendingModifiers.length > 0) {
             for (const mod of pendingModifiers) {
@@ -249,8 +276,6 @@ export function transformDreamToWorld(dream: string): WorldModel {
   }
 
   // ── Phase 3: Fallback descriptor binding ─────────────────────────
-  // Any descriptor not yet bound via phrase grouping attaches to the
-  // nearest noun to the right (original behavior).
   for (let i = 0; i < canonTokens.length; i++) {
     const ct = canonTokens[i];
     if (ct.type !== "descriptor") continue;
@@ -274,11 +299,11 @@ export function transformDreamToWorld(dream: string): WorldModel {
         }
         break;
       }
-      break; // unknown or relation word — stop looking
+      break;
     }
   }
 
-  // ── Phase 4: Structural relationships (above / under / in / at) ──
+  // ── Phase 4: Structural relationships ────────────────────────────
   const findNearestNoun = (start: number, direction: -1 | 1): WorldEntity | undefined => {
     for (let i = start; i >= 0 && i < canonTokens.length; i += direction) {
       const e = entityByCanonical.get(canonTokens[i].canonical);
@@ -303,7 +328,6 @@ export function transformDreamToWorld(dream: string): WorldModel {
       }
     }
 
-    // "under" / "below" → same as "above" but reversed
     if (word === "under" || word === "below") {
       const from = findNearestNoun(i - 1, -1);
       const to = findNearestNoun(i + 1, 1);
@@ -317,15 +341,55 @@ export function transformDreamToWorld(dream: string): WorldModel {
       }
     }
 
-    if (word === "in" || word === "at") {
+    if (word === "in" || word === "at" || word === "inside") {
+      const from = findNearestNoun(i - 1, -1);
+      const to = findNearestNoun(i + 1, 1);
+      if (from && to) {
+        relationships.push({
+          id: `relation_${relationships.length + 1}`,
+          type: "inside",
+          from: from.id,
+          to: to.id
+        });
+      }
+    }
+
+    if (word === "beside" || word === "near") {
+      const from = findNearestNoun(i - 1, -1);
+      const to = findNearestNoun(i + 1, 1);
+      if (from && to) {
+        relationships.push({
+          id: `relation_${relationships.length + 1}`,
+          type: "beside",
+          from: from.id,
+          to: to.id
+        });
+      }
+    }
+
+    if (word === "across" || word === "beyond") {
+      const from = findNearestNoun(i - 1, -1);
+      const to = findNearestNoun(i + 1, 1);
+      if (from && to) {
+        relationships.push({
+          id: `relation_${relationships.length + 1}`,
+          type: "across",
+          from: from.id,
+          to: to.id
+        });
+      }
+    }
+
+    // "surrounded by X" → X located_in around from
+    if (word === "surrounded") {
       const from = findNearestNoun(i - 1, -1);
       const to = findNearestNoun(i + 1, 1);
       if (from && to) {
         relationships.push({
           id: `relation_${relationships.length + 1}`,
           type: "located_in",
-          from: from.id,
-          to: to.id
+          from: to.id,
+          to: from.id
         });
       }
     }
@@ -354,71 +418,127 @@ export function transformDreamToWorld(dream: string): WorldModel {
     });
   }
 
-  // ── Debug output (dev only) ──────────────────────────────────────
-  logParseDebug(debugTokens);
-
   const semantics = inferSemantics(entities);
+
+  // ── Build and store debug info ────────────────────────────────────
+  const familyInfo: Array<{ name: string; family: string }> = [];
+  for (const e of entities) {
+    const kb = canonicalizeToken(e.attributes.name);
+    if (kb.generatorHint) {
+      familyInfo.push({ name: e.attributes.name, family: kb.generatorHint });
+    }
+  }
+  _lastParseDebug = { tokens: debugTokens, semantics, generatorFamilies: familyInfo };
+
+  logParseDebug(debugTokens, semantics);
 
   return { entities, relationships, semantics };
 }
 
-// ── Semantic tag inference ─────────────────────────────────────────
+// ── Semantic tag inference (expanded Iter 16) ─────────────────────────
 function inferSemantics(entities: WorldEntity[]): SemanticTags {
   const names = new Set(entities.map((e) => e.attributes.name));
   const all = [...names];
 
-  // Environment
+  // ── Environment ────────────────────────────────────────────────────
   const envRules: Array<[EnvironmentType, string[]]> = [
-    ["ocean",    ["ocean", "sea", "beach", "waves", "lake", "river", "island"]],
-    ["forest",   ["forest", "trees", "tree", "jungle", "garden"]],
-    ["city",     ["city", "street", "village", "building", "buildings"]],
-    ["sky",      ["clouds", "cloud", "sky", "floating"]],
-    ["mountain", ["mountain", "cliff", "valley", "canyon"]],
-    ["desert",   ["desert"]],
-    ["void",     ["void", "space", "dark"]],
+    ["ocean",     ["ocean", "sea"]],
+    ["coastal",   ["beach", "harbor", "reef", "island", "shore", "coast", "lighthouse"]],
+    ["forest",    ["forest", "trees", "tree", "jungle", "garden", "marsh"]],
+    ["city",      ["city", "street", "village", "building", "buildings", "plaza", "bazaar", "rooftop"]],
+    ["sky",       ["clouds", "cloud", "sky", "floating"]],
+    ["mountain",  ["mountain", "cliff", "valley", "canyon", "volcano", "plateau"]],
+    ["desert",    ["desert", "oasis"]],
+    ["cave",      ["cave", "crypt", "dungeon"]],
+    ["frozen",    ["glacier", "tundra"]],
+    ["celestial", ["space", "cosmos", "nebula", "galaxy"]],
+    ["ruins",     ["ruins", "ruin", "temple", "crypt"]],
+    ["surreal",   ["dreamscape", "realm", "mirror", "kaleidoscopic"]],
+    ["void",      ["void", "dark"]],
   ];
   let environment: EnvironmentType = "generic";
   for (const [env, keywords] of envRules) {
     if (keywords.some((k) => names.has(k))) { environment = env; break; }
   }
-  // "sky" overrides if "floating" or "above clouds" is present
   if (names.has("floating") || (names.has("clouds") && names.has("city"))) {
     environment = "sky";
   }
+  // Frozen descriptor overrides to frozen env
+  if (names.has("frozen") && environment === "generic") environment = "frozen";
+  // Storm descriptor can override
+  if ((names.has("storm") || names.has("thunder")) && environment === "generic") environment = "storm";
 
-  // Mood
+  // ── Mood ───────────────────────────────────────────────────────────
   const moodRules: Array<[MoodType, string[]]> = [
-    ["chaotic",   ["storm", "stormy", "thunder", "burning", "broken"]],
-    ["dark",      ["dark", "night", "void", "shadowy", "spectral"]],
+    ["chaotic",   ["storm", "stormy", "thunder", "burning", "broken", "shattered", "cursed", "haunted"]],
+    ["dark",      ["dark", "night", "void", "shadowy", "spectral", "forgotten", "dungeon", "crypt"]],
     ["mystical",  ["magical", "ethereal", "enchanted", "mystical", "surreal",
-                   "cosmic", "luminous", "sacred", "glowing"]],
-    ["dreamlike", ["dreamlike", "floating", "endless", "misty", "hidden"]],
-    ["calm",      ["calm", "quiet", "garden", "lake", "gentle"]],
+                   "cosmic", "luminous", "sacred", "bright", "aurora", "pulsing", "whispering"]],
+    ["dreamlike", ["dreamlike", "floating", "endless", "misty", "hidden", "melting",
+                   "inverted", "mirrored", "kaleidoscopic", "dreamscape"]],
+    ["calm",      ["quiet", "garden", "lake", "gentle", "field"]],
   ];
   let mood: MoodType = "calm";
   for (const [m, keywords] of moodRules) {
     if (keywords.some((k) => names.has(k))) { mood = m; break; }
   }
 
-  // Time
+  // ── Time ───────────────────────────────────────────────────────────
   let time: TimeOfDay = "day";
   if (all.some((n) => ["sunset", "dusk", "golden", "dawn"].includes(n))) time = "sunset";
-  if (all.some((n) => ["night", "moon", "stars", "starry", "dark"].includes(n))) time = "night";
+  if (all.some((n) => ["night", "moon", "stars", "starry", "dark", "eclipse"].includes(n))) time = "night";
 
-  // Weather
+  // ── Weather ────────────────────────────────────────────────────────
   let weather: WeatherType = "clear";
   if (all.some((n) => ["storm", "stormy", "thunder"].includes(n))) weather = "storm";
   else if (all.some((n) => ["rain", "rainy"].includes(n))) weather = "rain";
-  else if (all.some((n) => ["snow", "snowy", "frozen"].includes(n))) weather = "snow";
-  else if (all.some((n) => ["clouds", "cloud", "cloudy", "misty"].includes(n))) weather = "cloudy";
+  else if (all.some((n) => ["snow", "snowy", "frozen", "glacier", "tundra"].includes(n))) weather = "snow";
+  else if (all.some((n) => ["fog", "misty"].includes(n))) weather = "fog";
+  else if (all.some((n) => ["wind", "windy"].includes(n))) weather = "wind";
+  else if (all.some((n) => ["aurora"].includes(n))) weather = "aurora";
+  else if (all.some((n) => ["clouds", "cloud", "cloudy"].includes(n))) weather = "cloudy";
 
-  // Scale
+  // ── Scale ──────────────────────────────────────────────────────────
   let scale: ScaleType = "normal";
   if (all.some((n) => ["giant", "massive", "huge", "colossal"].includes(n))) scale = "giant";
   else if (all.some((n) => ["tiny", "small", "miniature"].includes(n))) scale = "tiny";
   else if (all.some((n) => ["endless", "infinite", "vast"].includes(n))) scale = "endless";
 
-  return { environment, mood, time, weather, scale };
+  // ── Density (new Iter 16) ──────────────────────────────────────────
+  let density: DensityPreset = "balanced";
+  if (all.some((n) => ["endless", "infinite", "vast", "dense"].includes(n))) density = "dense";
+  else if (all.some((n) => ["tiny", "small", "quiet"].includes(n))) density = "sparse";
+  else if (scale === "endless") density = "endless";
+  else if (scale === "giant") density = "dense";
+
+  // ── Surreality (new Iter 16) ───────────────────────────────────────
+  let surreality: SurrealityLevel = "normal";
+  const surrealWords = ["surreal", "dreamlike", "inverted", "mirrored", "kaleidoscopic",
+    "melting", "floating", "ethereal", "cosmic", "psychedelic", "dreamscape", "realm"];
+  const surrealCount = all.filter((n) => surrealWords.includes(n)).length;
+  if (surrealCount >= 3) surreality = "extreme";
+  else if (surrealCount >= 1) surreality = "heightened";
+
+  // ── Danger (new Iter 16) ───────────────────────────────────────────
+  let danger: DangerLevel = "neutral";
+  if (all.some((n) => ["storm", "thunder", "burning", "cursed", "haunted", "dungeon", "shattered"].includes(n))) danger = "dangerous";
+  else if (all.some((n) => ["dark", "void", "crypt", "frozen"].includes(n))) danger = "tense";
+  else if (all.some((n) => ["quiet", "garden", "lake", "field"].includes(n))) danger = "calm";
+
+  // ── Material emphasis (new Iter 16) ────────────────────────────────
+  let materialEmphasis: MaterialEmphasis = "none";
+  if (all.some((n) => ["crystal", "crystals", "glass", "prismatic", "shimmering"].includes(n))) materialEmphasis = "crystal";
+  else if (all.some((n) => ["silver", "copper", "mechanical", "rusty", "iron"].includes(n))) materialEmphasis = "metal";
+  else if (all.some((n) => ["stone", "marble", "petrified", "granite"].includes(n))) materialEmphasis = "stone";
+  else if (all.some((n) => ["organic", "overgrown", "vine", "root", "mushroom", "flower"].includes(n))) materialEmphasis = "organic";
+  else if (all.some((n) => ["bright", "neon", "pulsing", "aurora"].includes(n))) materialEmphasis = "emissive";
+
+  // ── Verticality (new Iter 16) ──────────────────────────────────────
+  let verticality: VerticalityLevel = "medium";
+  if (all.some((n) => ["floating", "sky", "clouds", "above", "tower", "steeple", "spire"].includes(n))) verticality = "high";
+  else if (all.some((n) => ["cave", "crypt", "dungeon", "submerged", "underground"].includes(n))) verticality = "low";
+
+  return { environment, mood, time, weather, scale, density, surreality, danger, materialEmphasis, verticality };
 }
 
 // ── Dev-only debug logging ────────────────────────────────────────────
@@ -426,7 +546,6 @@ let _debugEnabled: boolean | null = null;
 function isDebugEnabled(): boolean {
   if (_debugEnabled === null) {
     try {
-      // Works in browsers; fails silently in Node
       _debugEnabled = typeof location !== "undefined" && /[?&]debug/.test(location.search);
     } catch {
       _debugEnabled = false;
@@ -435,7 +554,7 @@ function isDebugEnabled(): boolean {
   return _debugEnabled;
 }
 
-function logParseDebug(tokens: TokenDebug[]): void {
+function logParseDebug(tokens: TokenDebug[], semantics: SemanticTags): void {
   if (!isDebugEnabled()) return;
   console.groupCollapsed("[DTWE] Parse debug");
   console.table(tokens.map((t) => ({
@@ -443,12 +562,12 @@ function logParseDebug(tokens: TokenDebug[]): void {
     canonical: t.canonical,
     type: t.type
   })));
+  console.log("[DTWE] Semantics:", semantics);
   console.groupEnd();
 }
 
 /**
- * Programmatic access to the last parse's debug data.
- * Call transformDreamToWorld first, then call this to inspect mappings.
+ * Programmatic access to a parse's debug data.
  */
 export function debugLastParse(dream: string): TokenDebug[] {
   const normalized = normalizeDream(dream);
@@ -462,65 +581,176 @@ export function debugLastParse(dream: string): TokenDebug[] {
   return result;
 }
 
-// ── Procedural dream generator ────────────────────────────────────────
-const DREAM_PLACES = [
+// ── Structured grammar-based random dream generator (Iter 16) ────────
+
+const G_PLACES = [
   "ocean", "city", "forest", "ruins", "mountains", "desert", "castle",
   "clouds", "cave", "garden", "temple", "village", "palace", "lake",
   "island", "valley", "jungle", "cliff", "void", "realm", "canyon",
-  "river", "sea", "field", "sky"
+  "river", "sea", "field", "sky", "glacier", "tundra", "volcano",
+  "marsh", "dungeon", "crypt", "arena", "library", "harbor", "plaza",
+  "reef", "oasis", "dreamscape", "beach"
 ];
-const DREAM_DESCRIPTORS = [
+const G_DESCRIPTORS = [
   "glowing", "floating", "ancient", "giant", "broken", "golden",
   "silver", "glass", "dark", "bright", "frozen", "burning",
   "endless", "magical", "ethereal", "hidden", "massive", "sacred",
   "misty", "luminous", "neon", "surreal", "cosmic", "spectral",
-  "enchanted", "shadowy", "lost", "vast", "deep", "tall"
+  "enchanted", "shadowy", "lost", "vast", "deep", "tall",
+  "tiny", "crimson", "emerald", "azure", "ivory", "copper",
+  "twisted", "shattered", "hollow", "submerged", "overgrown",
+  "petrified", "forgotten", "haunted", "whispering", "pulsing",
+  "inverted", "mirrored", "ornate", "cursed", "kaleidoscopic",
+  "melting", "shimmering", "dusty", "mechanical", "marble"
 ];
-const DREAM_OBJECTS = [
+const G_OBJECTS = [
   "tower", "ruins", "bridge", "crystals", "statue", "gate",
   "pillars", "stones", "tree", "monument", "orb", "throne",
-  "fragments", "spires", "walls", "columns", "lanterns"
+  "fragments", "spires", "walls", "columns", "lanterns",
+  "mirror", "stairs", "fountain", "lighthouse", "pyramid",
+  "dome", "arch", "skull", "bell", "cage", "campfire",
+  "windmill", "vine", "mushroom", "steeple"
 ];
-const DREAM_MODIFIERS = [
-  "above clouds", "under a purple sky", "during a golden sunset",
-  "in a storm", "at night with stars", "over the ocean",
-  "in the rain", "under moonlight", "at dawn",
-  "with floating fragments", "beside an ancient river",
-  "surrounded by mist", "during a thunderstorm",
-  "beneath a frozen moon", "in eternal twilight",
-  "with glowing crystals everywhere", "at the edge of the void"
+const G_SCALES = [
+  "giant", "massive", "tiny", "endless", "colossal", "towering",
+  "miniature", "vast", "sprawling", "immense"
 ];
-const DREAM_CONDITIONS = [
-  "where time stands still", "that stretches beyond the horizon",
-  "shrouded in purple light", "half-submerged in water",
-  "crumbling into the sky", "reflected in an endless mirror",
-  "surrounded by floating debris", "pulsing with inner light"
+const G_MOODS = [
+  "serene", "ominous", "mystical", "haunting", "tranquil",
+  "eerie", "sacred", "solemn", "dreamlike", "forbidden",
+  "forgotten", "cursed", "ancient", "ethereal", "melancholic"
+];
+const G_ENV_FEATURES = [
+  "floating islands", "crystal formations", "ancient roots",
+  "glowing fungi", "frozen waterfalls", "lava streams",
+  "vine bridges", "cloud platforms", "coral growths",
+  "stone arches", "mirror pools", "shadow corridors",
+  "sand dunes", "ice pillars", "mushroom groves",
+  "rusted machinery", "glass spires", "bone altars"
+];
+const G_WEATHER = [
+  "rain", "storm", "snow", "fog", "wind", "aurora"
+];
+const G_TIMES = [
+  "at night", "at dawn", "at dusk", "at sunset", "at midnight",
+  "under moonlight", "under starlight", "during twilight"
+];
+const G_MATERIALS = [
+  "crystal", "golden", "silver", "marble", "obsidian",
+  "glass", "copper", "ivory", "wooden", "iron", "jade"
+];
+const G_SURREAL = [
+  "where gravity is reversed", "that shifts when you look away",
+  "reflected in an endless mirror", "growing from nothing",
+  "pulsing with inner light", "dissolving into mist",
+  "stretching beyond the horizon", "half-submerged in water",
+  "crumbling into the sky", "surrounded by floating debris",
+  "whispering forgotten names", "where time moves differently",
+  "shrouded in purple light", "bleeding color into the void",
+  "folding in on itself", "that exists between dreams"
+];
+
+// ── Template patterns ─────────────────────────────────────────────────
+interface DreamTemplate {
+  weight: number;
+  build: (pick: <T>(arr: T[]) => T, maybe: (p: number) => boolean) => string;
+}
+
+const DREAM_TEMPLATES: DreamTemplate[] = [
+  // Pattern 1: scale + descriptor + place + above/beside + descriptor + place + time
+  { weight: 3, build: (pick, maybe) => {
+    let s = `A ${maybe(0.4) ? pick(G_SCALES) + " " : ""}${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
+    s += ` above a ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
+    if (maybe(0.6)) s += ` during a ${pick(G_WEATHER)} ${pick(G_TIMES).replace("at ", "")}`;
+    if (maybe(0.3)) s += ` ${pick(G_SURREAL)}`;
+    return s;
+  }},
+  // Pattern 2: descriptor + objects + surrounding + place + env feature
+  { weight: 2, build: (pick, maybe) => {
+    let s = `${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS)} surrounding a ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
+    if (maybe(0.5)) s += ` beside ${pick(G_ENV_FEATURES)}`;
+    if (maybe(0.4)) s += ` ${pick(G_TIMES)}`;
+    return s;
+  }},
+  // Pattern 3: mood + place + filled with + descriptor + objects + sky
+  { weight: 3, build: (pick, maybe) => {
+    let s = `A ${pick(G_MOODS)} ${pick(G_PLACES)} filled with ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS)}`;
+    s += ` under a ${pick(G_DESCRIPTORS)} sky`;
+    if (maybe(0.4)) s += ` ${pick(G_SURREAL)}`;
+    return s;
+  }},
+  // Pattern 4: surreal + place + material objects + weather
+  { weight: 2, build: (pick, maybe) => {
+    let s = `A ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)} with ${pick(G_MATERIALS)} ${pick(G_OBJECTS)}`;
+    if (maybe(0.6)) s += ` and ${pick(G_ENV_FEATURES)}`;
+    if (maybe(0.5)) s += ` in ${pick(G_WEATHER)}`;
+    if (maybe(0.3)) s += ` ${pick(G_SURREAL)}`;
+    return s;
+  }},
+  // Pattern 5: structure inside place + env feature
+  { weight: 2, build: (pick, maybe) => {
+    let s = `An ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS)} inside a ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
+    if (maybe(0.5)) s += ` with ${pick(G_ENV_FEATURES)}`;
+    if (maybe(0.4)) s += ` ${pick(G_TIMES)}`;
+    return s;
+  }},
+  // Pattern 6: two places connected
+  { weight: 2, build: (pick, maybe) => {
+    const rel = pick(["above", "beside", "across", "beyond"]);
+    let s = `A ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)} ${rel} a ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
+    if (maybe(0.5)) s += ` with ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS)}`;
+    if (maybe(0.4)) s += ` ${pick(G_TIMES)}`;
+    if (maybe(0.3)) s += ` ${pick(G_SURREAL)}`;
+    return s;
+  }},
+  // Pattern 7: simple atmospheric
+  { weight: 1, build: (pick, maybe) => {
+    let s = `A ${pick(G_MOODS)} ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
+    if (maybe(0.7)) s += ` ${pick(G_TIMES)}`;
+    if (maybe(0.5)) s += ` ${pick(G_SURREAL)}`;
+    return s;
+  }},
+  // Pattern 8: complex multi-element
+  { weight: 1, build: (pick, maybe) => {
+    let s = `${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS)} and ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS)}`;
+    s += ` in a ${pick(G_SCALES)} ${pick(G_PLACES)}`;
+    if (maybe(0.5)) s += ` surrounded by ${pick(G_ENV_FEATURES)}`;
+    if (maybe(0.4)) s += ` ${pick(G_SURREAL)}`;
+    return s;
+  }},
 ];
 
 export function generateRandomDream(): string {
   const pick = <T>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
-  const parts: string[] = [];
+  const maybe = (p: number): boolean => Math.random() < p;
 
-  // Always: descriptor + place
-  parts.push(`A ${pick(DREAM_DESCRIPTORS)} ${pick(DREAM_PLACES)}`);
-
-  // 70% chance: second descriptor + place
-  if (Math.random() > 0.3) {
-    parts.push(`and a ${pick(DREAM_DESCRIPTORS)} ${pick(DREAM_PLACES)}`);
+  // Weighted template selection
+  const totalWeight = DREAM_TEMPLATES.reduce((sum, t) => sum + t.weight, 0);
+  let r = Math.random() * totalWeight;
+  let template = DREAM_TEMPLATES[0];
+  for (const t of DREAM_TEMPLATES) {
+    r -= t.weight;
+    if (r <= 0) { template = t; break; }
   }
 
-  // 60% chance: object with descriptor
-  if (Math.random() > 0.4) {
-    parts.push(`with ${pick(DREAM_DESCRIPTORS)} ${pick(DREAM_OBJECTS)}`);
-  }
-
-  // Always: modifier (setting / atmosphere)
-  parts.push(pick(DREAM_MODIFIERS));
-
-  // 40% chance: condition
-  if (Math.random() > 0.6) {
-    parts.push(pick(DREAM_CONDITIONS));
-  }
-
-  return parts.join(" ");
+  return template.build(pick, maybe);
 }
+
+// ── Coverage test samples (used by debug mode) ───────────────────────
+export const COVERAGE_SAMPLES = [
+  "A ruined citadel above a stormy sea",
+  "A luminous forest with crystal ruins",
+  "A neon metropolis in the rain",
+  "A frozen temple inside a mountain cavern",
+  "A surreal void with floating mirrors and giant moons",
+  "A calm village beside a glowing lake at dusk",
+  "An endless desert with broken towers and crimson skies",
+  "A haunted crypt beneath a forgotten castle",
+  "An overgrown jungle with golden statues and vine bridges",
+  "A shattered glacier under aurora lights",
+  "A whispering library filled with floating books",
+  "A massive volcano above an emerald forest",
+  "A mirrored dreamscape with inverted towers",
+  "A tiny island surrounded by endless ocean at sunset",
+  "A mechanical city with copper towers and pulsing lights",
+];

@@ -4,6 +4,8 @@ import type { WorldModel, WorldEntity, SemanticTags, ScaleType, EntityType, Envi
 import { resolveSurfaceProfile } from "./surface.js";
 import type { SurfaceProfile } from "./surface.js";
 import { accumulateFootstep, resetFootstepAccumulator, setFootstepSurface, playInteractionSound } from "./audio.js";
+import { getGeneratorFamily } from "../core/knowledge.js";
+import type { GeneratorFamily } from "../core/knowledge.js";
 
 type GroupMap = Map<string, THREE.Group>;
 
@@ -623,16 +625,31 @@ export function setControlsEnabled(enabled: boolean): void {
 function createGroupForEntity(entity: WorldEntity): THREE.Group {
   const name = entity.attributes.name;
   const rng = seededRandom(`${worldSeed}|${name}`);
+
+  // 1. Exact dictionary match
   const generator = dictionaryGenerators[name];
   let group: THREE.Group;
   if (generator) {
     group = generator(rng);
-  } else if (entity.type === "place") {
-    group = createPlatformGroup();
-  } else if (entity.type === "object") {
-    group = createBoxGroup();
   } else {
-    group = createUnknownGroup();
+    // 2. Family-based generation via knowledge base
+    const familyInfo = getGeneratorFamily(name);
+    if (familyInfo) {
+      const familyGen = familyGenerators[familyInfo.family];
+      if (familyGen) {
+        group = familyGen(rng, familyInfo.variant);
+      } else if (entity.type === "place") {
+        group = createPlatformGroup();
+      } else {
+        group = createBoxGroup();
+      }
+    } else if (entity.type === "place") {
+      group = createPlatformGroup();
+    } else if (entity.type === "object") {
+      group = createBoxGroup();
+    } else {
+      group = createUnknownGroup();
+    }
   }
 
   // Tag for interaction / collision / gameplay
@@ -643,11 +660,18 @@ function createGroupForEntity(entity: WorldEntity): THREE.Group {
 }
 
 function resolveInteractionTag(name: string, type: EntityType): string {
-  const structures = ["city", "castle", "tower", "towers", "ruins", "ruin", "temple", "palace", "village", "bridge", "bridges", "gate", "gates"];
-  const landmarks = ["statue", "statues", "pillar", "pillars", "crystal", "crystals", "dream zone"];
+  const structures = ["city", "castle", "tower", "towers", "ruins", "ruin", "temple", "palace",
+    "village", "bridge", "bridges", "gate", "gates", "arena", "library", "pyramid",
+    "dome", "arch", "steeple", "lighthouse", "windmill", "fountain", "monument"];
+  const landmarks = ["statue", "statues", "pillar", "pillars", "crystal", "crystals",
+    "dream zone", "mirror", "orb", "bell", "altar", "throne", "campfire"];
   const envClouds = ["cloud", "clouds"];
-  const envBackground = ["ocean", "sea", "lake", "river", "beach", "forest", "mountain"];
-  const interactive = ["tree", "trees", "stone", "stones", "rock", "rocks", "fragment", "fragments"];
+  const envBackground = ["ocean", "sea", "lake", "river", "beach", "forest", "mountain",
+    "glacier", "tundra", "desert", "oasis", "volcano", "canyon", "valley", "marsh",
+    "reef", "harbor", "island", "field", "plateau"];
+  const interactive = ["tree", "trees", "stone", "stones", "rock", "rocks",
+    "fragment", "fragments", "vine", "root", "mushroom", "flower",
+    "skull", "bone", "cage", "chain", "book", "flag"];
 
   if (structures.includes(name)) return "structure";
   if (landmarks.includes(name)) return "landmark";
@@ -701,6 +725,50 @@ function applyDescriptor(name: string, target: THREE.Group): void {
     if (name === "dark") {
       material.color.multiplyScalar(0.8);
       material.emissiveIntensity = Math.min(material.emissiveIntensity, 0.1);
+    }
+
+    // ── Iter 16: expanded descriptor effects ──────────────────────
+    if (name === "golden")  material.color = new THREE.Color(0xd4a843);
+    if (name === "silver")  material.color = new THREE.Color(0xb0b8c4);
+    if (name === "crimson") material.color = new THREE.Color(0x8b1a1a);
+    if (name === "emerald") material.color = new THREE.Color(0x2e7d32);
+    if (name === "azure")   material.color = new THREE.Color(0x1565c0);
+    if (name === "ivory")   material.color = new THREE.Color(0xf5f0e0);
+    if (name === "copper")  { material.color = new THREE.Color(0xb87333); material.metalness = Math.max(material.metalness, 0.5); }
+    if (name === "purple")  material.color = new THREE.Color(0x6a1b9a);
+    if (name === "neon")    { material.emissive = new THREE.Color(0x00e5ff); material.emissiveIntensity = 0.6; }
+    if (name === "frozen")  { material.color = new THREE.Color(0xb0d4e8); material.roughness = 0.05; material.metalness = 0.2; }
+    if (name === "burning") { material.emissive = new THREE.Color(0xff4400); material.emissiveIntensity = 0.5; }
+    if (name === "marble")  { material.color = new THREE.Color(0xe8e4de); material.roughness = 0.15; material.metalness = 0.08; }
+    if (name === "wooden")  { material.color = new THREE.Color(0x6d4c2a); material.roughness = 0.9; material.metalness = 0; }
+    if (name === "rusty")   { material.color = new THREE.Color(0x8b4513); material.roughness = 0.95; }
+    if (name === "shimmering" || name === "pulsing") {
+      material.emissive = new THREE.Color(0x88ccee);
+      material.emissiveIntensity = Math.max(material.emissiveIntensity, 0.35);
+    }
+    if (name === "ancient" || name === "ruined" || name === "forgotten") {
+      material.color.multiplyScalar(0.7);
+      material.roughness = Math.min(material.roughness + 0.15, 1);
+    }
+    if (name === "overgrown") {
+      material.color.lerp(new THREE.Color(0x2a5a2a), 0.3);
+    }
+    if (name === "cursed" || name === "haunted") {
+      material.color.multiplyScalar(0.6);
+      material.emissive = new THREE.Color(0x220022);
+      material.emissiveIntensity = Math.max(material.emissiveIntensity, 0.2);
+    }
+    if (name === "mechanical") {
+      material.metalness = Math.max(material.metalness, 0.6);
+      material.roughness = Math.min(material.roughness, 0.3);
+    }
+    if (name === "inverted") {
+      target.rotation.x = Math.PI;
+    }
+    if (name === "submerged") {
+      target.position.y -= 3;
+      material.transparent = true;
+      material.opacity = Math.min(material.opacity, 0.7);
     }
 
     if (name === "bright" || name === "floating") {
@@ -1362,6 +1430,9 @@ function setupFloatingGroups(groupById: GroupMap): void {
 type DensityLevel = "low" | "medium" | "high";
 
 function inferDensityLevel(semantics: SemanticTags): DensityLevel {
+  // Prefer explicit density from semantic inference (Iter 16)
+  if ((semantics as any).density === "dense") return "high";
+  if ((semantics as any).density === "sparse") return "low";
   if (semantics.scale === "giant" || semantics.scale === "endless") return "high";
   if (semantics.scale === "tiny") return "low";
   if (semantics.mood === "chaotic" || semantics.mood === "mystical") return "high";
@@ -1489,6 +1560,63 @@ function createGroundDetail(rng: () => number, env: EnvironmentType, sm: number)
     wisp.scale.y = 0.3;
     wisp.position.y = 0.5 + rng() * 3;
     group.add(wisp);
+  } else if (env === "coastal") {
+    const mat = new THREE.MeshStandardMaterial({ color: 0xa0967a, roughness: 0.9 });
+    const count = 1 + Math.floor(rng() * 3);
+    for (let i = 0; i < count; i++) {
+      const r = (0.2 + rng() * 0.5) * sm;
+      const shell = new THREE.Mesh(new THREE.DodecahedronGeometry(r, 0), mat);
+      shell.scale.y = 0.4;
+      shell.position.set((rng() - 0.5) * 3, r * 0.1, (rng() - 0.5) * 3);
+      shell.rotation.set(rng() * Math.PI, rng() * Math.PI, 0);
+      group.add(shell);
+    }
+  } else if (env === "cave") {
+    const mat = new THREE.MeshStandardMaterial({ color: 0x3a3a3e, roughness: 0.9 });
+    const h = (0.5 + rng() * 1.5) * sm;
+    const spike = new THREE.Mesh(new THREE.ConeGeometry(0.2 * sm, h, 5), mat);
+    spike.position.y = h / 2;
+    group.add(spike);
+  } else if (env === "frozen") {
+    const mat = new THREE.MeshStandardMaterial({ color: 0xc0d8ee, roughness: 0.1, transparent: true, opacity: 0.7 });
+    const r = (0.3 + rng() * 0.7) * sm;
+    const chunk = new THREE.Mesh(new THREE.OctahedronGeometry(r, 0), mat);
+    chunk.position.y = r * 0.3;
+    chunk.rotation.set(rng() * Math.PI, rng() * Math.PI, 0);
+    group.add(chunk);
+  } else if (env === "storm" || env === "celestial") {
+    const mat = new THREE.MeshStandardMaterial({
+      color: env === "storm" ? 0x4a6a8a : 0x8a8aff,
+      emissive: new THREE.Color(env === "storm" ? 0x2a4a6a : 0x4a4aaa),
+      emissiveIntensity: 0.3, roughness: 0.3
+    });
+    const r = (0.1 + rng() * 0.3) * sm;
+    const spark = new THREE.Mesh(new THREE.SphereGeometry(r, 6, 6), mat);
+    spark.position.set((rng() - 0.5) * 3, 0.5 + rng() * 2, (rng() - 0.5) * 3);
+    group.add(spark);
+  } else if (env === "ruins") {
+    const mat = new THREE.MeshStandardMaterial({ color: 0x7a7568, roughness: 0.9 });
+    const count = 2 + Math.floor(rng() * 3);
+    for (let i = 0; i < count; i++) {
+      const r = (0.2 + rng() * 0.6) * sm;
+      const rubble = new THREE.Mesh(new THREE.BoxGeometry(r, r * 0.6, r), mat);
+      rubble.position.set((rng() - 0.5) * 3, r * 0.3, (rng() - 0.5) * 3);
+      rubble.rotation.set(rng() * 0.3, rng() * Math.PI, rng() * 0.3);
+      group.add(rubble);
+    }
+  } else if (env === "surreal") {
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x8a6aa0, roughness: 0.2,
+      emissive: new THREE.Color(0x4a2a6a), emissiveIntensity: 0.2,
+      transparent: true, opacity: 0.6
+    });
+    const r = (0.3 + rng() * 0.8) * sm;
+    const shape = rng() < 0.5
+      ? new THREE.Mesh(new THREE.TetrahedronGeometry(r, 0), mat)
+      : new THREE.Mesh(new THREE.OctahedronGeometry(r, 0), mat);
+    shape.position.set((rng() - 0.5) * 2, r + rng() * 2, (rng() - 0.5) * 2);
+    shape.rotation.set(rng() * Math.PI, rng() * Math.PI, rng() * Math.PI);
+    group.add(shape);
   } else {
     const mat = new THREE.MeshStandardMaterial({ color: 0x6b6b6e, roughness: 0.85 });
     const r = (0.3 + rng() * 0.8) * sm;
@@ -1581,6 +1709,86 @@ function createMidLayerFiller(rng: () => number, env: EnvironmentType, sm: numbe
       cloud.scale.y = 0.2 + rng() * 0.15;
       cloud.position.set((rng() - 0.5) * 40, rng() * 15, (rng() - 0.5) * 40);
       group.add(cloud);
+    }
+  } else if (env === "coastal") {
+    const count = 2 + Math.floor(rng() * 3);
+    const driftMat = new THREE.MeshStandardMaterial({ color: 0x8a7a5a, roughness: 0.9 });
+    for (let i = 0; i < count; i++) {
+      const h = (1 + rng() * 3) * sm;
+      const r = (0.3 + rng() * 0.8) * sm;
+      const drift = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.3, r, h, 6), driftMat);
+      drift.position.set((rng() - 0.5) * 20, h / 2, (rng() - 0.5) * 20);
+      drift.rotation.z = (rng() - 0.5) * 0.4;
+      drift.castShadow = true;
+      group.add(drift);
+    }
+  } else if (env === "cave") {
+    const darkRock = new THREE.MeshStandardMaterial({ color: 0x3a3a3e, roughness: 0.9 });
+    const count = 2 + Math.floor(rng() * 3);
+    for (let i = 0; i < count; i++) {
+      const h = (2 + rng() * 5) * sm;
+      const r = (0.4 + rng() * 0.8) * sm;
+      const stalagmite = new THREE.Mesh(new THREE.ConeGeometry(r, h, 6), darkRock);
+      stalagmite.position.set((rng() - 0.5) * 15, h / 2, (rng() - 0.5) * 15);
+      stalagmite.castShadow = true;
+      group.add(stalagmite);
+    }
+  } else if (env === "frozen") {
+    const iceMat = new THREE.MeshStandardMaterial({ color: 0xb8d8e8, roughness: 0.05, transparent: true, opacity: 0.7 });
+    const count = 2 + Math.floor(rng() * 3);
+    for (let i = 0; i < count; i++) {
+      const w = (2 + rng() * 5) * sm;
+      const h = (2 + rng() * 6) * sm;
+      const block = new THREE.Mesh(new THREE.BoxGeometry(w, h, w * 0.7), iceMat);
+      block.position.set((rng() - 0.5) * 20, h / 2, (rng() - 0.5) * 20);
+      block.rotation.y = rng() * Math.PI;
+      block.castShadow = true;
+      group.add(block);
+    }
+  } else if (env === "ruins") {
+    const ruinMat = new THREE.MeshStandardMaterial({ color: 0x7a7568, roughness: 0.85 });
+    const count = 3 + Math.floor(rng() * 4);
+    for (let i = 0; i < count; i++) {
+      const h = (2 + rng() * 6) * sm;
+      const w = (1 + rng() * 2) * sm;
+      const wall = new THREE.Mesh(new THREE.BoxGeometry(w, h, w * 0.3), ruinMat);
+      wall.position.set((rng() - 0.5) * 18, h / 2, (rng() - 0.5) * 18);
+      wall.rotation.y = rng() * Math.PI;
+      wall.rotation.z = (rng() - 0.5) * 0.2;
+      wall.castShadow = true;
+      group.add(wall);
+    }
+  } else if (env === "surreal" || env === "celestial") {
+    const glowMat = new THREE.MeshStandardMaterial({
+      color: env === "surreal" ? 0x8a6aa0 : 0x88aadd,
+      roughness: 0.2, metalness: 0.3,
+      emissive: new THREE.Color(env === "surreal" ? 0x4a2a6a : 0x4466aa),
+      emissiveIntensity: 0.3, transparent: true, opacity: 0.6
+    });
+    const count = 2 + Math.floor(rng() * 3);
+    for (let i = 0; i < count; i++) {
+      const s = (1 + rng() * 3) * sm;
+      const type = Math.floor(rng() * 3);
+      const mesh = type === 0 ? new THREE.Mesh(new THREE.OctahedronGeometry(s, 0), glowMat)
+        : type === 1 ? new THREE.Mesh(new THREE.TorusGeometry(s, s * 0.25, 8, 16), glowMat)
+        : new THREE.Mesh(new THREE.IcosahedronGeometry(s, 0), glowMat);
+      mesh.position.set((rng() - 0.5) * 20, 2 + rng() * 10, (rng() - 0.5) * 20);
+      mesh.rotation.set(rng() * Math.PI, rng() * Math.PI, rng() * Math.PI);
+      mesh.castShadow = true;
+      group.add(mesh);
+    }
+  } else if (env === "storm") {
+    // Dark windswept debris
+    const mat = new THREE.MeshStandardMaterial({ color: 0x3a4a50, roughness: 0.8 });
+    const count = 2 + Math.floor(rng() * 3);
+    for (let i = 0; i < count; i++) {
+      const h = (2 + rng() * 4) * sm;
+      const w = (1 + rng() * 2) * sm;
+      const debris = new THREE.Mesh(new THREE.BoxGeometry(w, h, w * 0.4), mat);
+      debris.position.set((rng() - 0.5) * 18, h / 2, (rng() - 0.5) * 18);
+      debris.rotation.set((rng() - 0.5) * 0.3, rng() * Math.PI, (rng() - 0.5) * 0.25);
+      debris.castShadow = true;
+      group.add(debris);
     }
   } else {
     const mat = new THREE.MeshStandardMaterial({ color: 0x7a7568, roughness: 0.85 });
@@ -1703,6 +1911,31 @@ function createBackgroundSilhouette(rng: () => number, env: EnvironmentType, sm:
       const spire = new THREE.Mesh(new THREE.CylinderGeometry(1.5 * sm, 3 * sm, h, 8), mat);
       spire.position.set((rng() - 0.5) * 50, h / 2, (rng() - 0.5) * 30);
       group.add(spire);
+    }
+  } else if (roll < 0.8 && (env === "frozen" || env === "cave" || env === "ruins")) {
+    // Distant dark formations
+    const count = 3 + Math.floor(rng() * 4);
+    const color = env === "frozen" ? 0x1a2a3a : env === "cave" ? 0x121218 : 0x2a2520;
+    const darkMat = new THREE.MeshBasicMaterial({ color, fog: true });
+    for (let i = 0; i < count; i++) {
+      const h = (15 + rng() * 40) * sm;
+      const r = (6 + rng() * 12) * sm;
+      const form = new THREE.Mesh(new THREE.ConeGeometry(r, h, 6), darkMat);
+      form.position.set((rng() - 0.5) * 60, h / 2, (rng() - 0.5) * 40);
+      group.add(form);
+    }
+  } else if (env === "surreal" || env === "celestial") {
+    // Floating abstract silhouettes
+    const count = 3 + Math.floor(rng() * 4);
+    const surrMat = new THREE.MeshBasicMaterial({ color: 0x1a1030, fog: true, transparent: true, opacity: 0.6 });
+    for (let i = 0; i < count; i++) {
+      const s = (10 + rng() * 20) * sm;
+      const shape = rng() < 0.5
+        ? new THREE.Mesh(new THREE.OctahedronGeometry(s, 0), surrMat)
+        : new THREE.Mesh(new THREE.TorusGeometry(s, s * 0.2, 6, 12), surrMat);
+      shape.position.set((rng() - 0.5) * 60, 10 + rng() * 50, (rng() - 0.5) * 40);
+      shape.rotation.set(rng() * Math.PI, rng() * Math.PI, rng() * Math.PI);
+      group.add(shape);
     }
   } else {
     // Distant cloud masses / floating islands
@@ -2179,6 +2412,721 @@ function disposeObject3D(obj: THREE.Object3D | null): void {
     }
   });
   scene.remove(obj);
+}
+
+// --------------- Family Generators (Iter 16) ---------------
+// Each family produces geometry for concepts that don't have exact dictionary matches.
+
+const familyGenerators: Record<string, (rng: () => number, variant?: string) => THREE.Group> = {
+  urban: createUrbanFamilyGroup,
+  forest: createForestFamilyGroup,
+  coastal: createCoastalFamilyGroup,
+  sky: createSkyFamilyGroup,
+  ruins: createRuinsFamilyGroup,
+  mountains: createMountainsFamilyGroup,
+  desert: createDesertFamilyGroup,
+  water: createWaterFamilyGroup,
+  surreal_abstract: createSurrealFamilyGroup,
+  celestial: createCelestialFamilyGroup,
+  architecture: createArchitectureFamilyGroup,
+  frozen: createFrozenFamilyGroup,
+  cave: createCaveFamilyGroup,
+  organic: createOrganicFamilyGroup,
+};
+
+function createUrbanFamilyGroup(rng: () => number, variant?: string): THREE.Group {
+  const group = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({ color: 0x4a4a50, roughness: 0.6, metalness: 0.15 });
+
+  if (variant === "village" || variant === "bazaar") {
+    // Small clustered buildings
+    const count = 5 + Math.floor(rng() * 6);
+    for (let i = 0; i < count; i++) {
+      const w = 2 + rng() * 3;
+      const h = 2 + rng() * 5;
+      const building = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), mat);
+      building.position.set((rng() - 0.5) * 20, h / 2, (rng() - 0.5) * 20);
+      building.castShadow = true;
+      group.add(building);
+    }
+  } else if (variant === "rooftop") {
+    // Flat platform with railing-like edges
+    const floor = new THREE.Mesh(new THREE.BoxGeometry(15, 0.3, 15), mat);
+    floor.position.y = 12;
+    floor.receiveShadow = true;
+    group.add(floor);
+    for (const [x, z] of [[-7, 0], [7, 0], [0, -7], [0, 7]] as [number, number][]) {
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(x === 0 ? 15 : 0.3, 1.2, z === 0 ? 15 : 0.3), mat);
+      rail.position.set(x, 12.9, z);
+      group.add(rail);
+    }
+  } else {
+    // Generic street / plaza: paved area with scattered boxes
+    const ground = new THREE.Mesh(
+      new THREE.BoxGeometry(20, 0.2, 20),
+      new THREE.MeshStandardMaterial({ color: 0x3a3a40, roughness: 0.9 })
+    );
+    ground.receiveShadow = true;
+    group.add(ground);
+    const count = 3 + Math.floor(rng() * 4);
+    for (let i = 0; i < count; i++) {
+      const w = 1 + rng() * 2;
+      const h = 0.5 + rng() * 2;
+      const box = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), mat);
+      box.position.set((rng() - 0.5) * 16, h / 2, (rng() - 0.5) * 16);
+      box.castShadow = true;
+      group.add(box);
+    }
+  }
+  return group;
+}
+
+function createForestFamilyGroup(rng: () => number, variant?: string): THREE.Group {
+  const group = new THREE.Group();
+  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x4a3520, roughness: 0.9 });
+
+  if (variant === "jungle" || variant === "marsh") {
+    const leafColor = variant === "marsh" ? 0x2a4a2a : 0x0a3a0a;
+    const leafMat = new THREE.MeshStandardMaterial({ color: leafColor, roughness: 0.7 });
+    const count = 8 + Math.floor(rng() * 10);
+    for (let i = 0; i < count; i++) {
+      const trunkH = 4 + rng() * 8;
+      const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.15 + rng() * 0.2, 0.2 + rng() * 0.2, trunkH, 6), trunkMat);
+      trunk.position.set((rng() - 0.5) * 30, trunkH / 2, (rng() - 0.5) * 30);
+      // Jungle trees lean slightly
+      trunk.rotation.z = (rng() - 0.5) * 0.2;
+      trunk.castShadow = true;
+      group.add(trunk);
+      const crownR = 2 + rng() * 3;
+      const crown = new THREE.Mesh(new THREE.SphereGeometry(crownR, 8, 8), leafMat);
+      crown.position.set(trunk.position.x, trunkH + crownR * 0.4, trunk.position.z);
+      crown.castShadow = true;
+      group.add(crown);
+    }
+    if (variant === "marsh") {
+      // Murky water patches
+      const waterMat = new THREE.MeshStandardMaterial({ color: 0x2a4a3a, roughness: 0.4, transparent: true, opacity: 0.6 });
+      for (let i = 0; i < 3; i++) {
+        const r = 3 + rng() * 5;
+        const water = new THREE.Mesh(new THREE.CircleGeometry(r, 16), waterMat);
+        water.rotation.x = -Math.PI / 2;
+        water.position.set((rng() - 0.5) * 20, 0.02, (rng() - 0.5) * 20);
+        group.add(water);
+      }
+    }
+  } else if (variant === "garden" || variant === "field") {
+    // Short grass patches + scattered flowers
+    const grassMat = new THREE.MeshStandardMaterial({ color: 0x3a6a30, roughness: 0.85 });
+    for (let i = 0; i < 12; i++) {
+      const r = 1 + rng() * 2;
+      const patch = new THREE.Mesh(new THREE.SphereGeometry(r, 6, 4), grassMat);
+      patch.scale.y = 0.15;
+      patch.position.set((rng() - 0.5) * 25, r * 0.05, (rng() - 0.5) * 25);
+      group.add(patch);
+    }
+    // A few small trees
+    const leafMat = new THREE.MeshStandardMaterial({ color: 0x2a5a2a, roughness: 0.7 });
+    for (let i = 0; i < 4; i++) {
+      const h = 3 + rng() * 4;
+      const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.18, h, 6), trunkMat);
+      trunk.position.set((rng() - 0.5) * 20, h / 2, (rng() - 0.5) * 20);
+      trunk.castShadow = true;
+      group.add(trunk);
+      const cr = 1.5 + rng() * 2;
+      const crown = new THREE.Mesh(new THREE.SphereGeometry(cr, 8, 8), leafMat);
+      crown.position.set(trunk.position.x, h + cr * 0.4, trunk.position.z);
+      group.add(crown);
+    }
+  } else {
+    // Default forest — delegate to existing
+    return createForestGroup(rng);
+  }
+  return group;
+}
+
+function createCoastalFamilyGroup(rng: () => number, variant?: string): THREE.Group {
+  const group = new THREE.Group();
+
+  if (variant === "harbor") {
+    // Wooden dock + water
+    const dockMat = new THREE.MeshStandardMaterial({ color: 0x6d4c2a, roughness: 0.9 });
+    const dock = new THREE.Mesh(new THREE.BoxGeometry(4, 0.3, 18), dockMat);
+    dock.position.set(0, 1, 0);
+    dock.castShadow = true;
+    group.add(dock);
+    // Posts
+    for (let i = -3; i <= 3; i++) {
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 2.5, 6), dockMat);
+      post.position.set(rng() < 0.5 ? -1.8 : 1.8, 0.5, i * 2.5);
+      group.add(post);
+    }
+    // Water
+    const waterMat = new THREE.MeshStandardMaterial({ color: 0x1a3a5e, roughness: 0.3, transparent: true, opacity: 0.8 });
+    const water = new THREE.Mesh(new THREE.CircleGeometry(30, 32), waterMat);
+    water.rotation.x = -Math.PI / 2;
+    water.position.y = -0.05;
+    group.add(water);
+  } else if (variant === "lighthouse") {
+    // Tall cylinder + light sphere
+    const baseMat = new THREE.MeshStandardMaterial({ color: 0xe8e0d0, roughness: 0.7 });
+    const h = 18 + rng() * 8;
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 2.5, h, 12), baseMat);
+    base.position.y = h / 2;
+    base.castShadow = true;
+    group.add(base);
+    const light = new THREE.Mesh(
+      new THREE.SphereGeometry(1.2, 10, 10),
+      new THREE.MeshStandardMaterial({ color: 0xffee88, emissive: new THREE.Color(0xffdd44), emissiveIntensity: 0.8, roughness: 0.2 })
+    );
+    light.position.y = h + 1.5;
+    group.add(light);
+  } else if (variant === "reef") {
+    // Coral-like formations
+    const colors = [0xd45a5a, 0xd4a05a, 0x5ad4a0, 0xd45ad4];
+    const count = 6 + Math.floor(rng() * 6);
+    for (let i = 0; i < count; i++) {
+      const h = 1 + rng() * 3;
+      const r = 0.5 + rng() * 1;
+      const coral = new THREE.Mesh(
+        new THREE.CylinderGeometry(r * 0.3, r, h, 6),
+        new THREE.MeshStandardMaterial({ color: colors[Math.floor(rng() * colors.length)], roughness: 0.7 })
+      );
+      coral.position.set((rng() - 0.5) * 15, h / 2, (rng() - 0.5) * 15);
+      coral.rotation.z = (rng() - 0.5) * 0.3;
+      coral.castShadow = true;
+      group.add(coral);
+    }
+  } else if (variant === "island") {
+    // Small land mass surrounded by water
+    const land = new THREE.Mesh(
+      new THREE.CylinderGeometry(8, 12, 2, 16),
+      new THREE.MeshStandardMaterial({ color: 0x6a8a4a, roughness: 0.9 })
+    );
+    land.position.y = 0.5;
+    group.add(land);
+    const waterMat = new THREE.MeshStandardMaterial({ color: 0x1a5a7a, roughness: 0.3, transparent: true, opacity: 0.7 });
+    const water = new THREE.Mesh(new THREE.CircleGeometry(40, 32), waterMat);
+    water.rotation.x = -Math.PI / 2;
+    water.position.y = -0.05;
+    group.add(water);
+  } else {
+    return createBeachGroup(rng);
+  }
+  return group;
+}
+
+function createSkyFamilyGroup(rng: () => number, _variant?: string): THREE.Group {
+  return createCloudGroup(rng);
+}
+
+function createRuinsFamilyGroup(rng: () => number, variant?: string): THREE.Group {
+  if (variant === "skull" || variant === "bone") {
+    const group = new THREE.Group();
+    const mat = new THREE.MeshStandardMaterial({ color: 0xd8d0c0, roughness: 0.7 });
+    const count = 3 + Math.floor(rng() * 5);
+    for (let i = 0; i < count; i++) {
+      const r = 0.3 + rng() * 0.8;
+      const obj = new THREE.Mesh(new THREE.SphereGeometry(r, 8, 6), mat);
+      obj.position.set((rng() - 0.5) * 6, r * 0.5, (rng() - 0.5) * 6);
+      obj.rotation.set(rng() * Math.PI, rng() * Math.PI, 0);
+      group.add(obj);
+    }
+    return group;
+  }
+  if (variant === "cage" || variant === "chain") {
+    const group = new THREE.Group();
+    const mat = new THREE.MeshStandardMaterial({ color: 0x5a5a60, roughness: 0.6, metalness: 0.4 });
+    // Vertical bars
+    for (let i = 0; i < 6; i++) {
+      const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 4, 6), mat);
+      bar.position.set(Math.cos(i * Math.PI / 3) * 1.5, 2, Math.sin(i * Math.PI / 3) * 1.5);
+      group.add(bar);
+    }
+    const top = new THREE.Mesh(new THREE.TorusGeometry(1.5, 0.1, 6, 12), mat);
+    top.position.y = 4;
+    top.rotation.x = Math.PI / 2;
+    group.add(top);
+    return group;
+  }
+  return createRuinsGroup(rng);
+}
+
+function createMountainsFamilyGroup(rng: () => number, variant?: string): THREE.Group {
+  if (variant === "canyon" || variant === "valley") {
+    const group = new THREE.Group();
+    const mat = new THREE.MeshStandardMaterial({ color: 0x7a6050, roughness: 0.9 });
+    // Two tall cliff walls
+    for (const side of [-1, 1]) {
+      const h = 20 + rng() * 20;
+      const wall = new THREE.Mesh(new THREE.BoxGeometry(4 + rng() * 3, h, 30 + rng() * 20), mat);
+      wall.position.set(side * (8 + rng() * 5), h / 2, 0);
+      wall.castShadow = true;
+      group.add(wall);
+    }
+    return group;
+  }
+  if (variant === "volcano") {
+    const group = new THREE.Group();
+    const h = 30 + rng() * 20;
+    const r = 16 + rng() * 10;
+    const cone = new THREE.Mesh(
+      new THREE.ConeGeometry(r, h, 12),
+      new THREE.MeshStandardMaterial({ color: 0x4a4040, roughness: 0.85 })
+    );
+    cone.position.y = h / 2;
+    cone.castShadow = true;
+    group.add(cone);
+    // Lava glow at top
+    const lava = new THREE.Mesh(
+      new THREE.CylinderGeometry(r * 0.15, r * 0.2, 2, 12),
+      new THREE.MeshStandardMaterial({ color: 0xff4400, emissive: new THREE.Color(0xff2200), emissiveIntensity: 0.6, roughness: 0.8 })
+    );
+    lava.position.y = h - 1;
+    group.add(lava);
+    return group;
+  }
+  if (variant === "plateau") {
+    const group = new THREE.Group();
+    const w = 20 + rng() * 15;
+    const h = 8 + rng() * 10;
+    const mesa = new THREE.Mesh(
+      new THREE.BoxGeometry(w, h, w),
+      new THREE.MeshStandardMaterial({ color: 0x8a7060, roughness: 0.9 })
+    );
+    mesa.position.y = h / 2;
+    mesa.castShadow = true;
+    mesa.receiveShadow = true;
+    group.add(mesa);
+    return group;
+  }
+  return createMountainGroup(rng);
+}
+
+function createDesertFamilyGroup(rng: () => number, variant?: string): THREE.Group {
+  const group = new THREE.Group();
+  if (variant === "oasis") {
+    // Small water pool + palm trees
+    const waterMat = new THREE.MeshStandardMaterial({ color: 0x2a7a8a, roughness: 0.3, transparent: true, opacity: 0.7 });
+    const water = new THREE.Mesh(new THREE.CircleGeometry(5, 24), waterMat);
+    water.rotation.x = -Math.PI / 2;
+    water.position.y = 0.02;
+    group.add(water);
+    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x6a5030, roughness: 0.9 });
+    const leafMat = new THREE.MeshStandardMaterial({ color: 0x2a6a2a, roughness: 0.7 });
+    for (let i = 0; i < 3; i++) {
+      const h = 5 + rng() * 4;
+      const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.3, h, 6), trunkMat);
+      trunk.position.set((rng() - 0.5) * 8, h / 2, (rng() - 0.5) * 8);
+      trunk.rotation.z = (rng() - 0.5) * 0.15;
+      group.add(trunk);
+      const leaf = new THREE.Mesh(new THREE.SphereGeometry(2 + rng(), 8, 6), leafMat);
+      leaf.scale.y = 0.4;
+      leaf.position.set(trunk.position.x, h, trunk.position.z);
+      group.add(leaf);
+    }
+  } else {
+    // Dune fields + rock pillars
+    const sandMat = new THREE.MeshStandardMaterial({ color: 0xc8a860, roughness: 0.95 });
+    for (let i = 0; i < 5; i++) {
+      const r = 4 + rng() * 8;
+      const dune = new THREE.Mesh(new THREE.SphereGeometry(r, 10, 6), sandMat);
+      dune.scale.y = 0.25;
+      dune.position.set((rng() - 0.5) * 40, 0, (rng() - 0.5) * 40);
+      group.add(dune);
+    }
+    const rockMat = new THREE.MeshStandardMaterial({ color: 0x8a7560, roughness: 0.85 });
+    for (let i = 0; i < 3; i++) {
+      const h = 4 + rng() * 10;
+      const pillar = new THREE.Mesh(new THREE.CylinderGeometry(1, 1.5, h, 8), rockMat);
+      pillar.position.set((rng() - 0.5) * 25, h / 2, (rng() - 0.5) * 25);
+      pillar.castShadow = true;
+      group.add(pillar);
+    }
+  }
+  return group;
+}
+
+function createWaterFamilyGroup(rng: () => number, _variant?: string): THREE.Group {
+  return createOceanGroup(rng);
+}
+
+function createSurrealFamilyGroup(rng: () => number, variant?: string): THREE.Group {
+  const group = new THREE.Group();
+  const emissiveMat = new THREE.MeshStandardMaterial({
+    color: 0x6a4a8a, roughness: 0.2, metalness: 0.3,
+    emissive: new THREE.Color(0x4a2a6a), emissiveIntensity: 0.4,
+    transparent: true, opacity: 0.7
+  });
+
+  if (variant === "mirror") {
+    // Tall reflective plane
+    const mirror = new THREE.Mesh(
+      new THREE.BoxGeometry(6, 10, 0.2),
+      new THREE.MeshStandardMaterial({ color: 0xaabbcc, roughness: 0, metalness: 0.9, transparent: true, opacity: 0.8 })
+    );
+    mirror.position.y = 5;
+    mirror.castShadow = true;
+    group.add(mirror);
+  } else if (variant === "ring") {
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(3, 0.4, 12, 24),
+      emissiveMat
+    );
+    ring.position.y = 5;
+    ring.rotation.x = Math.PI / 6;
+    group.add(ring);
+    group.userData.floating = true;
+  } else if (variant === "mask") {
+    // Abstract face shape
+    const face = new THREE.Mesh(new THREE.SphereGeometry(2, 12, 8), emissiveMat);
+    face.scale.z = 0.3;
+    face.position.y = 4;
+    group.add(face);
+    // Eyes
+    const eyeMat = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: new THREE.Color(0xffffff), emissiveIntensity: 0.8 });
+    for (const x of [-0.6, 0.6]) {
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.25, 8, 8), eyeMat);
+      eye.position.set(x, 4.3, 0.5);
+      group.add(eye);
+    }
+  } else {
+    // Impossible geometry: floating shapes, inverted structures
+    const count = 4 + Math.floor(rng() * 5);
+    for (let i = 0; i < count; i++) {
+      const type = Math.floor(rng() * 4);
+      let mesh: THREE.Mesh;
+      const s = 1 + rng() * 3;
+      if (type === 0) mesh = new THREE.Mesh(new THREE.OctahedronGeometry(s, 0), emissiveMat);
+      else if (type === 1) mesh = new THREE.Mesh(new THREE.TetrahedronGeometry(s, 0), emissiveMat);
+      else if (type === 2) mesh = new THREE.Mesh(new THREE.TorusGeometry(s, s * 0.3, 8, 16), emissiveMat);
+      else mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(s, 0), emissiveMat);
+      mesh.position.set((rng() - 0.5) * 15, 2 + rng() * 10, (rng() - 0.5) * 15);
+      mesh.rotation.set(rng() * Math.PI, rng() * Math.PI, rng() * Math.PI);
+      mesh.castShadow = true;
+      group.add(mesh);
+    }
+    group.userData.floating = true;
+  }
+  return group;
+}
+
+function createCelestialFamilyGroup(rng: () => number, variant?: string): THREE.Group {
+  const group = new THREE.Group();
+  const glowMat = new THREE.MeshStandardMaterial({
+    color: 0xaabbff, roughness: 0.1, metalness: 0.2,
+    emissive: new THREE.Color(0x6688cc), emissiveIntensity: 0.5,
+    transparent: true, opacity: 0.7
+  });
+
+  if (variant === "orb") {
+    const sphere = new THREE.Mesh(new THREE.SphereGeometry(1.5, 16, 16), glowMat);
+    sphere.position.y = 3;
+    group.add(sphere);
+    group.userData.floating = true;
+  } else {
+    // Nebula-like cluster of glowing spheres
+    const count = 5 + Math.floor(rng() * 8);
+    for (let i = 0; i < count; i++) {
+      const r = 0.5 + rng() * 2;
+      const orb = new THREE.Mesh(new THREE.SphereGeometry(r, 10, 10), glowMat);
+      orb.position.set((rng() - 0.5) * 20, 5 + rng() * 15, (rng() - 0.5) * 20);
+      group.add(orb);
+    }
+    group.userData.floating = true;
+  }
+  return group;
+}
+
+function createArchitectureFamilyGroup(rng: () => number, variant?: string): THREE.Group {
+  const group = new THREE.Group();
+  const stoneMat = new THREE.MeshStandardMaterial({ color: 0x8a8070, roughness: 0.75, metalness: 0.05 });
+
+  if (variant === "temple") {
+    // Pillared structure with flat roof
+    const roofH = 8;
+    const roof = new THREE.Mesh(new THREE.BoxGeometry(12, 0.5, 12), stoneMat);
+    roof.position.y = roofH;
+    roof.castShadow = true;
+    group.add(roof);
+    for (let x = -1; x <= 1; x += 2) {
+      for (let z = -1; z <= 1; z += 2) {
+        const h = roofH;
+        const col = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.6, h, 10), stoneMat);
+        col.position.set(x * 5, h / 2, z * 5);
+        col.castShadow = true;
+        group.add(col);
+      }
+    }
+    // Steps
+    for (let i = 0; i < 3; i++) {
+      const step = new THREE.Mesh(new THREE.BoxGeometry(14 - i * 2, 0.3, 14 - i * 2), stoneMat);
+      step.position.y = i * 0.3;
+      group.add(step);
+    }
+  } else if (variant === "palace") {
+    // Grand building: wider castle
+    const w = 16;
+    const h = 12;
+    const body = new THREE.Mesh(new THREE.BoxGeometry(w, h, w * 0.8), stoneMat);
+    body.position.y = h / 2;
+    body.castShadow = true;
+    group.add(body);
+    // Dome
+    const dome = new THREE.Mesh(
+      new THREE.SphereGeometry(w * 0.3, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2),
+      new THREE.MeshStandardMaterial({ color: 0xd4a843, roughness: 0.4, metalness: 0.3 })
+    );
+    dome.position.y = h;
+    group.add(dome);
+  } else if (variant === "library") {
+    // Tall shelved building
+    const h = 10;
+    const body = new THREE.Mesh(new THREE.BoxGeometry(10, h, 8), stoneMat);
+    body.position.y = h / 2;
+    body.castShadow = true;
+    group.add(body);
+    // Window rows
+    const windowMat = new THREE.MeshStandardMaterial({ color: 0xd4c080, emissive: new THREE.Color(0xd4c080), emissiveIntensity: 0.3 });
+    for (let y = 2; y < h; y += 2) {
+      for (let x = -3; x <= 3; x += 3) {
+        const win = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.2, 0.1), windowMat);
+        win.position.set(x, y, 4.05);
+        group.add(win);
+      }
+    }
+  } else if (variant === "arena") {
+    // Circular colosseum
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(12, 3, 8, 24),
+      stoneMat
+    );
+    ring.position.y = 3;
+    ring.rotation.x = Math.PI / 2;
+    ring.castShadow = true;
+    group.add(ring);
+  } else if (variant === "pyramid") {
+    const h = 15 + rng() * 10;
+    const r = h * 0.7;
+    const pyramid = new THREE.Mesh(new THREE.ConeGeometry(r, h, 4), new THREE.MeshStandardMaterial({ color: 0xc8a860, roughness: 0.8 }));
+    pyramid.position.y = h / 2;
+    pyramid.rotation.y = Math.PI / 4;
+    pyramid.castShadow = true;
+    group.add(pyramid);
+  } else if (variant === "dome") {
+    const r = 6 + rng() * 4;
+    const dome = new THREE.Mesh(
+      new THREE.SphereGeometry(r, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2),
+      stoneMat
+    );
+    dome.castShadow = true;
+    group.add(dome);
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(r, r, 1, 16), stoneMat);
+    base.position.y = -0.5;
+    group.add(base);
+  } else if (variant === "arch") {
+    // Simple arch
+    const h = 6 + rng() * 3;
+    for (const x of [-3, 3]) {
+      const col = new THREE.Mesh(new THREE.BoxGeometry(1, h, 1), stoneMat);
+      col.position.set(x, h / 2, 0);
+      col.castShadow = true;
+      group.add(col);
+    }
+    const top = new THREE.Mesh(new THREE.BoxGeometry(7, 1, 1.5), stoneMat);
+    top.position.y = h;
+    top.castShadow = true;
+    group.add(top);
+  } else if (variant === "steeple") {
+    const h = 20 + rng() * 10;
+    const steeple = new THREE.Mesh(
+      new THREE.ConeGeometry(2, h, 8),
+      new THREE.MeshStandardMaterial({ color: 0x6a6a70, roughness: 0.6, metalness: 0.2 })
+    );
+    steeple.position.y = h / 2;
+    steeple.castShadow = true;
+    group.add(steeple);
+  } else if (variant === "fountain") {
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(3, 3.5, 1, 16), stoneMat);
+    base.position.y = 0.5;
+    group.add(base);
+    const col = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 3, 8), stoneMat);
+    col.position.y = 2.5;
+    group.add(col);
+    const waterMat = new THREE.MeshStandardMaterial({ color: 0x4488aa, roughness: 0.2, transparent: true, opacity: 0.6 });
+    const water = new THREE.Mesh(new THREE.CylinderGeometry(2.5, 2.5, 0.3, 16), waterMat);
+    water.position.y = 0.8;
+    group.add(water);
+  } else {
+    // Fallback: delegate to castle or pillar
+    return createCastleGroup(rng);
+  }
+  return group;
+}
+
+function createFrozenFamilyGroup(rng: () => number, variant?: string): THREE.Group {
+  const group = new THREE.Group();
+  const iceMat = new THREE.MeshStandardMaterial({
+    color: 0xb8d8e8, roughness: 0.05, metalness: 0.2,
+    transparent: true, opacity: 0.75
+  });
+
+  if (variant === "glacier") {
+    // Large ice blocks
+    const count = 4 + Math.floor(rng() * 5);
+    for (let i = 0; i < count; i++) {
+      const w = 3 + rng() * 8;
+      const h = 3 + rng() * 10;
+      const block = new THREE.Mesh(new THREE.BoxGeometry(w, h, w * (0.6 + rng() * 0.4)), iceMat);
+      block.position.set((rng() - 0.5) * 25, h / 2, (rng() - 0.5) * 25);
+      block.rotation.y = rng() * Math.PI;
+      block.rotation.z = (rng() - 0.5) * 0.2;
+      block.castShadow = true;
+      group.add(block);
+    }
+  } else {
+    // Tundra: flat with sparse ice spikes
+    const ground = new THREE.Mesh(
+      new THREE.CircleGeometry(30, 32),
+      new THREE.MeshStandardMaterial({ color: 0xd0d8e0, roughness: 0.9 })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    group.add(ground);
+    const count = 6 + Math.floor(rng() * 6);
+    for (let i = 0; i < count; i++) {
+      const h = 1 + rng() * 5;
+      const spike = new THREE.Mesh(new THREE.ConeGeometry(0.5 + rng() * 0.5, h, 6), iceMat);
+      spike.position.set((rng() - 0.5) * 25, h / 2, (rng() - 0.5) * 25);
+      spike.castShadow = true;
+      group.add(spike);
+    }
+  }
+  return group;
+}
+
+function createCaveFamilyGroup(rng: () => number, variant?: string): THREE.Group {
+  const group = new THREE.Group();
+  const darkRock = new THREE.MeshStandardMaterial({ color: 0x3a3a3e, roughness: 0.9 });
+
+  // Cave ceiling (inverted dome)
+  const ceiling = new THREE.Mesh(
+    new THREE.SphereGeometry(25, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2),
+    new THREE.MeshStandardMaterial({ color: 0x2a2a30, roughness: 0.95, side: THREE.BackSide })
+  );
+  ceiling.position.y = 15;
+  ceiling.rotation.x = Math.PI;
+  group.add(ceiling);
+
+  // Stalactites
+  const count = 8 + Math.floor(rng() * 8);
+  for (let i = 0; i < count; i++) {
+    const h = 2 + rng() * 6;
+    const stalactite = new THREE.Mesh(new THREE.ConeGeometry(0.3 + rng() * 0.5, h, 6), darkRock);
+    stalactite.position.set((rng() - 0.5) * 20, 15 - h / 2, (rng() - 0.5) * 20);
+    stalactite.rotation.x = Math.PI; // point downward
+    group.add(stalactite);
+  }
+
+  // Stalagmites
+  for (let i = 0; i < count; i++) {
+    const h = 1 + rng() * 4;
+    const stalagmite = new THREE.Mesh(new THREE.ConeGeometry(0.3 + rng() * 0.4, h, 6), darkRock);
+    stalagmite.position.set((rng() - 0.5) * 20, h / 2, (rng() - 0.5) * 20);
+    stalagmite.castShadow = true;
+    group.add(stalagmite);
+  }
+
+  if (variant === "crystal") {
+    // Glowing crystals growing from walls
+    const crystalMat = new THREE.MeshStandardMaterial({
+      color: 0x7bb8d4, roughness: 0.1, metalness: 0.3,
+      emissive: new THREE.Color(0x4488aa), emissiveIntensity: 0.4,
+      transparent: true, opacity: 0.7
+    });
+    for (let i = 0; i < 6; i++) {
+      const h = 2 + rng() * 4;
+      const crystal = new THREE.Mesh(new THREE.ConeGeometry(0.4, h, 6), crystalMat);
+      crystal.position.set((rng() - 0.5) * 15, rng() * 8, (rng() - 0.5) * 15);
+      crystal.rotation.set(rng() * 0.5, rng() * Math.PI, rng() * 0.5);
+      group.add(crystal);
+    }
+  }
+
+  if (variant === "crypt" || variant === "dungeon") {
+    // Sarcophagus / wall blocks
+    const wallMat = new THREE.MeshStandardMaterial({ color: 0x4a4a50, roughness: 0.85 });
+    for (let i = 0; i < 4; i++) {
+      const w = 2 + rng() * 3;
+      const h = 1.5 + rng() * 2;
+      const block = new THREE.Mesh(new THREE.BoxGeometry(w, h, w * 0.6), wallMat);
+      block.position.set((rng() - 0.5) * 12, h / 2, (rng() - 0.5) * 12);
+      block.castShadow = true;
+      group.add(block);
+    }
+  }
+
+  return group;
+}
+
+function createOrganicFamilyGroup(rng: () => number, variant?: string): THREE.Group {
+  const group = new THREE.Group();
+
+  if (variant === "fire" || variant === "lantern") {
+    // Glowing fire/light source
+    const fireMat = new THREE.MeshStandardMaterial({
+      color: 0xff8800,
+      emissive: new THREE.Color(0xff4400),
+      emissiveIntensity: 0.7,
+      roughness: 0.5
+    });
+    const flame = new THREE.Mesh(new THREE.ConeGeometry(0.8, 2, 8), fireMat);
+    flame.position.y = 1.5;
+    group.add(flame);
+    // Base logs
+    const logMat = new THREE.MeshStandardMaterial({ color: 0x4a3020, roughness: 0.9 });
+    for (let i = 0; i < 3; i++) {
+      const log = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 1.5, 6), logMat);
+      log.position.set(Math.cos(i * 2.1) * 0.4, 0.15, Math.sin(i * 2.1) * 0.4);
+      log.rotation.z = Math.PI / 2 + (rng() - 0.5) * 0.3;
+      group.add(log);
+    }
+  } else if (variant === "flower") {
+    // Colorful flowers
+    const colors = [0xff6688, 0xffaa44, 0x66aaff, 0xff66ff, 0xffff44];
+    const count = 5 + Math.floor(rng() * 8);
+    for (let i = 0; i < count; i++) {
+      const stemH = 0.5 + rng() * 1;
+      const stem = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.03, 0.03, stemH, 4),
+        new THREE.MeshStandardMaterial({ color: 0x2a6a2a })
+      );
+      stem.position.set((rng() - 0.5) * 6, stemH / 2, (rng() - 0.5) * 6);
+      group.add(stem);
+      const petal = new THREE.Mesh(
+        new THREE.SphereGeometry(0.15 + rng() * 0.1, 6, 6),
+        new THREE.MeshStandardMaterial({ color: colors[Math.floor(rng() * colors.length)] })
+      );
+      petal.position.set(stem.position.x, stemH + 0.1, stem.position.z);
+      group.add(petal);
+    }
+  } else {
+    // Generic organic — mushrooms, vines, etc.
+    const mat = new THREE.MeshStandardMaterial({ color: 0x8a6a4a, roughness: 0.8 });
+    const count = 3 + Math.floor(rng() * 5);
+    for (let i = 0; i < count; i++) {
+      const h = 0.5 + rng() * 2;
+      const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.15, h, 6), mat);
+      stem.position.set((rng() - 0.5) * 8, h / 2, (rng() - 0.5) * 8);
+      group.add(stem);
+      const cap = new THREE.Mesh(
+        new THREE.SphereGeometry(0.4 + rng() * 0.5, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2),
+        new THREE.MeshStandardMaterial({ color: 0xc06040, roughness: 0.7 })
+      );
+      cap.position.set(stem.position.x, h, stem.position.z);
+      group.add(cap);
+    }
+  }
+  return group;
 }
 
 // --------------- Dictionary Generators ---------------
