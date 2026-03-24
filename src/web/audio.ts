@@ -1,7 +1,7 @@
 import type { WorldModel } from "../core/transform.js";
 import type { SurfaceType } from "./surface.js";
 
-type AmbientCategory = "ocean" | "forest" | "city" | "night" | "rain" | "wind";
+type AmbientCategory = "ocean" | "forest" | "city" | "night" | "rain" | "wind" | "cave" | "desert" | "frozen" | "celestial";
 
 let audioCtx: AudioContext | null = null;
 let masterGain: GainNode | null = null;
@@ -16,20 +16,29 @@ let footstepInterval = 0.48;
 export function resolveAmbientProfile(world: WorldModel): { primary: AmbientCategory; secondary: AmbientCategory | null } {
   const names = new Set(world.entities.map((e) => e.attributes.name));
 
-  if (names.has("ocean") || names.has("sea") || names.has("beach") || names.has("lake")) {
+  if (names.has("ocean") || names.has("sea") || names.has("beach") || names.has("lake") || names.has("harbor") || names.has("reef")) {
     return { primary: "ocean", secondary: names.has("rain") || names.has("rainy") ? "rain" : null };
   }
-  if (names.has("forest") || names.has("jungle") || names.has("garden")) {
+  if (names.has("forest") || names.has("jungle") || names.has("garden") || names.has("marsh")) {
     return { primary: "forest", secondary: names.has("rain") || names.has("rainy") ? "rain" : null };
   }
-  if (names.has("city") || names.has("street") || names.has("village")) {
+  if (names.has("city") || names.has("street") || names.has("village") || names.has("bazaar")) {
     return { primary: "city", secondary: names.has("rain") || names.has("rainy") ? "rain" : null };
+  }
+  if (names.has("cave") || names.has("crypt") || names.has("dungeon") || names.has("underground")) {
+    return { primary: "cave", secondary: null };
+  }
+  if (names.has("desert") || names.has("oasis")) {
+    return { primary: "desert", secondary: names.has("wind") ? "wind" : null };
+  }
+  if (names.has("glacier") || names.has("tundra") || names.has("frozen") || names.has("snow") || names.has("snowy")) {
+    return { primary: "frozen", secondary: "wind" };
+  }
+  if (names.has("space") || names.has("cosmos") || names.has("nebula") || names.has("dreamscape") || names.has("realm")) {
+    return { primary: "celestial", secondary: null };
   }
   if (names.has("rain") || names.has("rainy") || names.has("storm") || names.has("thunder")) {
     return { primary: "rain", secondary: null };
-  }
-  if (names.has("snow") || names.has("snowy") || names.has("frozen")) {
-    return { primary: "wind", secondary: null };
   }
   return { primary: "night", secondary: null };
 }
@@ -105,6 +114,22 @@ function buildLayer(ctx: AudioContext, dest: AudioNode, cat: AmbientCategory, vo
     case "wind":
       addFilteredNoise(ctx, dest, "bandpass", 500, volume * 0.05, 0.8);
       break;
+    case "cave":
+      addFilteredNoise(ctx, dest, "lowpass", 150, volume * 0.03);
+      addFilteredNoise(ctx, dest, "bandpass", 300, volume * 0.015, 3);
+      break;
+    case "desert":
+      addFilteredNoise(ctx, dest, "bandpass", 400, volume * 0.025, 1.2);
+      addFilteredNoise(ctx, dest, "lowpass", 100, volume * 0.01);
+      break;
+    case "frozen":
+      addFilteredNoise(ctx, dest, "bandpass", 600, volume * 0.04, 0.6);
+      addFilteredNoise(ctx, dest, "highpass", 3000, volume * 0.015);
+      break;
+    case "celestial":
+      addFilteredNoise(ctx, dest, "bandpass", 250, volume * 0.02, 4);
+      addFilteredNoise(ctx, dest, "bandpass", 1000, volume * 0.01, 6);
+      break;
     case "night":
     default:
       addFilteredNoise(ctx, dest, "bandpass", 200, volume * 0.02, 2);
@@ -170,6 +195,11 @@ const FOOTSTEP_PARAMS: Record<SurfaceType, { freq: number; decay: number; filter
   sand:    { freq: 120, decay: 0.08, filterFreq: 600,  filterQ: 0.5, volume: 0.12 },
   grass:   { freq: 180, decay: 0.06, filterFreq: 1200, filterQ: 0.8, volume: 0.10 },
   stone:   { freq: 350, decay: 0.04, filterFreq: 3000, filterQ: 1.2, volume: 0.15 },
+  ice:     { freq: 400, decay: 0.03, filterFreq: 4000, filterQ: 1.5, volume: 0.14 },
+  mud:     { freq: 100, decay: 0.10, filterFreq: 400,  filterQ: 0.4, volume: 0.11 },
+  marble:  { freq: 380, decay: 0.03, filterFreq: 3500, filterQ: 1.4, volume: 0.14 },
+  crystal: { freq: 500, decay: 0.02, filterFreq: 5000, filterQ: 2.0, volume: 0.10 },
+  void:    { freq: 150, decay: 0.12, filterFreq: 300,  filterQ: 0.3, volume: 0.06 },
   generic: { freq: 200, decay: 0.05, filterFreq: 1500, filterQ: 0.7, volume: 0.11 }
 };
 
