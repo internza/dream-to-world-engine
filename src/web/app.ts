@@ -1,7 +1,7 @@
 import { transformDreamToWorld, generateRandomDream, getLastParseDebug } from "../core/transform.js";
-import type { WorldModel } from "../core/transform.js";
-import { initRenderer, renderWorld, setControlsEnabled, toggleCameraMode, getCameraMode } from "./renderer.js";
-import { startAmbient, toggleMute, startWindLayer, stopWindLayer, resolveAmbientProfile } from "./audio.js";
+import type { WorldModel, DreamProfile } from "../core/transform.js";
+import { initRenderer, renderWorld, setControlsEnabled, toggleCameraMode, getCameraMode, startCinematicIntro, isCinematicActive, resetPlayerPosition, getCurrentPower, disposeWorld } from "./renderer.js";
+import { startAmbient, startAmbientFadeIn, toggleMute, startWindLayer, stopWindLayer, resolveAmbientProfile } from "./audio.js";
 
 const input = document.querySelector<HTMLTextAreaElement>("#dream-input");
 const button = document.querySelector<HTMLButtonElement>("#generate-btn");
@@ -13,6 +13,16 @@ const cameraToggleBtn = document.querySelector<HTMLButtonElement>("#camera-toggl
 const canvasWrap = document.querySelector<HTMLElement>(".canvas-wrap");
 const dreamStatus = document.getElementById("dream-status");
 const generationOverlay = document.getElementById("generation-overlay");
+
+// 16G: New UI elements
+const helpBtn = document.getElementById("help-btn");
+const resetPosBtn = document.getElementById("reset-pos-btn");
+const regenBtn = document.getElementById("regen-btn");
+const onboardingCard = document.getElementById("onboarding-card");
+const recentDreamsEl = document.getElementById("recent-dreams");
+const powerBar = document.getElementById("power-bar");
+const dreamTitleText = document.getElementById("dream-title-text");
+const dreamTitleSub = document.getElementById("dream-title-sub");
 
 if (!input || !button || !output || !canvas) {
   throw new Error("Missing required elements");
@@ -65,6 +75,42 @@ function sanitizeDreamInput(raw: string): string {
 }
 
 let isGenerating = false;
+let lastDreamText = "";
+
+// ── 16G: Onboarding state ────────────────────────────────────────────
+let onboardingShown = false;
+let onboardingAutoHide: number | null = null;
+
+function hideOnboarding(): void {
+  if (onboardingCard) {
+    onboardingCard.style.opacity = "0";
+    setTimeout(() => { onboardingCard!.style.display = "none"; }, 400);
+  }
+  if (onboardingAutoHide !== null) {
+    clearTimeout(onboardingAutoHide);
+    onboardingAutoHide = null;
+  }
+}
+
+// ── 16G: Recent dreams chip rendering ────────────────────────────────
+function renderRecentDreams(): void {
+  if (!recentDreamsEl) return;
+  const history = loadDreamHistory();
+  const recent = history.slice(-5).reverse();
+  recentDreamsEl.innerHTML = "";
+  if (!recent.length) return;
+  for (const entry of recent) {
+    const chip = document.createElement("button");
+    chip.className = "recent-dream-chip";
+    chip.textContent = entry.dream.length > 40 ? entry.dream.slice(0, 37) + "\u2026" : entry.dream;
+    chip.title = entry.dream;
+    chip.addEventListener("click", () => {
+      if (input) input.value = entry.dream;
+      generateWorldWithMemory(entry.dream);
+    });
+    recentDreamsEl.appendChild(chip);
+  }
+}
 
 // ── Core generation logic ────────────────────────────────────────────
 async function generateWorld(dreamText: string): Promise<void> {
@@ -83,20 +129,18 @@ async function generateWorld(dreamText: string): Promise<void> {
 
   setControlsEnabled(false);
 
-  // Show loading overlay (fade to darker)
+  // ── Step 1: Fade screen to black ──────────────────────────────────
   showGenerationOverlay();
   if (canvasWrap) {
-    canvasWrap.style.transition = "opacity 0.3s ease";
-    canvasWrap.style.opacity = "0.6";
+    canvasWrap.style.transition = "opacity 0.5s ease";
+    canvasWrap.style.opacity = "0";
   }
+  await new Promise((r) => setTimeout(r, 550));
 
-  // Small delay so overlay renders before heavy work
-  await new Promise((r) => setTimeout(r, 80));
-
+  // ── Step 2: Generate world (hidden behind black overlay) ──────────
   const world = getCachedWorld(sanitized);
   if (output) output.textContent = JSON.stringify(world, null, 2);
   renderWorld(world);
-  startAmbient(world);
 
   const profile = resolveAmbientProfile(world);
   if (profile.primary === "night") {
@@ -107,19 +151,74 @@ async function generateWorld(dreamText: string): Promise<void> {
 
   updateDreamStatus(sanitized, world.semantics.environment);
 
-  // Cinematic fade-in
+  // ── Step 3: Reveal canvas + start cinematic fly-in ────────────────
+  hideGenerationOverlay();
   if (canvasWrap) {
-    canvasWrap.style.transition = "opacity 1.2s ease-out";
-    canvasWrap.style.opacity = "0";
-    void canvasWrap.offsetHeight;
+    canvasWrap.style.transition = "opacity 0.8s ease-out";
     canvasWrap.style.opacity = "1";
   }
 
-  hideGenerationOverlay();
+  // 16G: Show dream title overlay during cinematic
+  const dreamTitleEl = document.getElementById("dream-title-overlay");
+  if (dreamTitleEl) {
+    if (dreamTitleText) {
+      dreamTitleText.textContent = sanitized.length > 120 ? sanitized.slice(0, 117) + "\u2026" : sanitized;
+    }
+    if (dreamTitleSub) {
+      const env = world.semantics.environment || "";
+      const mood = world.semantics.mood || "";
+      const parts = [env, mood].filter(Boolean);
+      dreamTitleSub.textContent = parts.length ? parts.join(" \u00B7 ") : "";
+    }
+    dreamTitleEl.style.transition = "opacity 0.8s ease-in";
+    dreamTitleEl.style.opacity = "1";
+  }
 
-  // Camera intro delay — controls disabled for cinematic entrance
-  await new Promise((r) => setTimeout(r, 900));
+  // Start ambient audio with fade-in during cinematic
+  startAmbientFadeIn(world, 2.5);
+
+  // Cinematic fly-in: camera sweeps from above to ground spawn
+  await new Promise<void>((resolve) => {
+    startCinematicIntro(() => {
+      resolve();
+    });
+  });
+
+  // 16G: Fade out dream title after cinematic
+  if (dreamTitleEl) {
+    dreamTitleEl.style.transition = "opacity 1.2s ease-out";
+    dreamTitleEl.style.opacity = "0";
+  }
+
+  // ── Step 4: Enable controls ───────────────────────────────────────
   setControlsEnabled(true);
+
+  // Show controls hint briefly
+  const hint = document.getElementById("controls-hint");
+  if (hint) {
+    hint.style.opacity = "1";
+    hint.style.transition = "opacity 2s ease";
+    setTimeout(() => { hint.style.opacity = "0.4"; }, 3000);
+  }
+
+  // 16G: Show onboarding card on first entry
+  if (onboardingCard && !onboardingShown) {
+    onboardingShown = true;
+    onboardingCard.style.display = "block";
+    setTimeout(() => { onboardingCard!.style.opacity = "1"; }, 50);
+    // Auto-hide after 6s
+    onboardingAutoHide = window.setTimeout(() => {
+      hideOnboarding();
+    }, 6000);
+  }
+
+  // 16G: Show power bar
+  if (powerBar) powerBar.classList.add("is-visible");
+
+  // 16G: Update recent dreams chips
+  renderRecentDreams();
+
+  lastDreamText = sanitized;
   isGenerating = false;
 }
 
@@ -137,7 +236,7 @@ input.addEventListener("keydown", (e) => {
 if (muteBtn) {
   muteBtn.addEventListener("click", () => {
     const nowMuted = toggleMute();
-    muteBtn.textContent = nowMuted ? "Unmute" : "Mute";
+    muteBtn.textContent = nowMuted ? "\uD83D\uDD07" : "\uD83D\uDD0A";
     muteBtn.classList.toggle("is-active", nowMuted);
   });
 }
@@ -162,7 +261,41 @@ if (randomBtn) {
   });
 }
 
-// No auto-generation on load — wait for user input
+// ── 16G: Demo toolbar handlers ───────────────────────────────────────
+if (helpBtn) {
+  helpBtn.addEventListener("click", () => {
+    if (!onboardingCard) return;
+    const visible = onboardingCard.style.display === "block";
+    if (visible) {
+      hideOnboarding();
+    } else {
+      onboardingCard.style.display = "block";
+      setTimeout(() => { onboardingCard!.style.opacity = "1"; }, 50);
+    }
+  });
+}
+
+if (resetPosBtn) {
+  resetPosBtn.addEventListener("click", () => {
+    resetPlayerPosition();
+  });
+}
+
+if (regenBtn) {
+  regenBtn.addEventListener("click", () => {
+    const text = lastDreamText || (input ? input.value.trim() : "");
+    if (text) generateWorldWithMemory(text);
+  });
+}
+
+// Hide onboarding on canvas click (pointer lock request)
+if (canvas) {
+  canvas.addEventListener("click", () => {
+    if (onboardingCard && onboardingCard.style.display === "block") {
+      hideOnboarding();
+    }
+  });
+}
 
 // ── Dream Memory (Scope H) ───────────────────────────────────────────
 const DREAM_HISTORY_KEY = "dtwe_dream_history";
@@ -172,6 +305,7 @@ interface DreamHistoryEntry {
   dream: string;
   environment: string;
   timestamp: number;
+  profile?: DreamProfile;
 }
 
 function loadDreamHistory(): DreamHistoryEntry[] {
@@ -186,15 +320,35 @@ function loadDreamHistory(): DreamHistoryEntry[] {
   }
 }
 
-function saveDreamToHistory(dream: string, environment: string): void {
+function saveDreamToHistory(dream: string, environment: string, profile?: DreamProfile): void {
   try {
     const history = loadDreamHistory();
     // Avoid exact duplicates of the most recent entry
     if (history.length > 0 && history[history.length - 1].dream === dream) return;
-    history.push({ dream, environment, timestamp: Date.now() });
+    history.push({ dream, environment, timestamp: Date.now(), profile });
     if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
     localStorage.setItem(DREAM_HISTORY_KEY, JSON.stringify(history));
   } catch { /* localStorage may be unavailable */ }
+}
+
+// ── 15F: Dream similarity — find past dreams with overlapping keywords ──
+function findSimilarDreams(profile: DreamProfile, maxResults = 3): DreamHistoryEntry[] {
+  const history = loadDreamHistory();
+  if (!profile.keywords.length) return [];
+  const keywordSet = new Set(profile.keywords);
+  const scored: Array<{ entry: DreamHistoryEntry; score: number }> = [];
+  for (const entry of history) {
+    if (!entry.profile?.keywords) continue;
+    let overlap = 0;
+    for (const kw of entry.profile.keywords) {
+      if (keywordSet.has(kw)) overlap++;
+    }
+    if (entry.profile.palette === profile.palette) overlap += 0.5;
+    if (entry.profile.tone === profile.tone) overlap += 0.5;
+    if (overlap > 0) scored.push({ entry, score: overlap });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, maxResults).map((s) => s.entry);
 }
 
 // Concept frequency — counts how often each canonical concept appears across dreams
@@ -227,7 +381,7 @@ async function generateWorldWithMemory(dreamText: string): Promise<void> {
   if (sanitized) {
     const world = dreamCache.get(sanitized.toLowerCase().trim());
     if (world) {
-      saveDreamToHistory(sanitized, world.semantics.environment);
+      saveDreamToHistory(sanitized, world.semantics.environment, world.dreamProfile);
       updateConceptFrequency(world);
       updateDebugPanel();
     }
@@ -301,6 +455,26 @@ function updateDebugPanel(): void {
   // Dream history count
   const history = loadDreamHistory();
   lines.push(`<b>Dream history:</b> ${history.length} entries`);
+
+  // 15F: Show dream profile and similar dreams
+  const lastDream = input?.value?.trim() || "";
+  if (lastDream) {
+    const lastWorld = dreamCache.get(lastDream.toLowerCase().trim());
+    if (lastWorld?.dreamProfile) {
+      const dp = lastWorld.dreamProfile;
+      lines.push(`<b>Dream Profile:</b>`);
+      lines.push(`&nbsp;&nbsp;palette: ${dp.palette}, tone: ${dp.tone}`);
+      lines.push(`&nbsp;&nbsp;layout: ${dp.layout}, coherence: ${dp.coherence.toFixed(2)}`);
+      lines.push(`&nbsp;&nbsp;keywords: ${dp.keywords.join(", ")}`);
+      const similar = findSimilarDreams(dp, 3);
+      if (similar.length > 0) {
+        lines.push(`<b>Similar past dreams:</b>`);
+        for (const s of similar) {
+          lines.push(`&nbsp;&nbsp;${escapeHtml(s.dream.slice(0, 60))}`);
+        }
+      }
+    }
+  }
 
   debugPanel.innerHTML = lines.join("<br>");
 }
