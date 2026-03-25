@@ -3,15 +3,17 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>DTWE Dream to World</title>
+    <title>Dream to World</title>
     <link rel="stylesheet" href="/web/styles.css" />
+    <link rel="icon" href="/src/web/favicon.png" type="image/png">   
   </head>
   <body>
     <div class="page">
       <header class="topbar">
         <div class="brand">Dream to World</div>
         <div class="topbar-actions">
-          <button id="mute-btn" class="pill" type="button">Mute</button>
+          <button id="mute-btn" class="pill" type="button">🔊</button>
+          <button id="help-btn" class="pill" type="button">?</button>
           <button id="camera-toggle-btn" class="pill" type="button">Camera: 1st</button>
         </div>
       </header>
@@ -37,6 +39,8 @@
             </button>
           </div>
         </div>
+        <!-- 16G: Recent dreams list -->
+        <div id="recent-dreams" class="recent-dreams"></div>
         <div id="dream-status" class="dream-status"></div>
       </section>
 
@@ -46,17 +50,66 @@
           <div class="card-subtitle">Generated 3D layout</div>
           <div class="canvas-wrap">
             <canvas id="world-canvas"></canvas>
+            <!-- 16G: Improved crosshair -->
             <div id="crosshair" class="crosshair"></div>
+            <!-- 16G: Screen vignette -->
+            <div id="vignette" class="vignette"></div>
             <div id="interaction-hint" class="interaction-hint" style="display:none">Press E to interact</div>
             <div id="feedback-text" class="feedback-text" style="opacity:0"></div>
             <div id="discovery-text" class="discovery-text" style="opacity:0"></div>
+            <!-- 16G: Enhanced dream title overlay with subtitle -->
+            <div id="dream-title-overlay" class="dream-title-overlay" style="opacity:0">
+              <div id="dream-title-text" class="dream-title-text"></div>
+              <div id="dream-title-sub" class="dream-title-sub"></div>
+            </div>
+            <!-- 16G: Compact power bar -->
+            <div id="power-bar" class="power-bar">
+              <div class="power-bar-item" data-power="flight">✈<span>Flight</span></div>
+              <div class="power-bar-item" data-power="laser">⚡<span>Laser</span></div>
+              <div class="power-bar-item" data-power="telekinesis">🔮<span>TK</span></div>
+              <div class="power-bar-item" data-power="destruction">💥<span>Destroy</span></div>
+              <div class="power-bar-item" data-power="shockwave">🌊<span>Push</span></div>
+            </div>
+            <div id="power-indicator" class="power-indicator" style="opacity:0"></div>
+            <div id="gamepad-hint" class="gamepad-hint" style="opacity:0"></div>
+            <!-- 16G: In-canvas toolbar -->
+            <div id="canvas-toolbar" class="canvas-toolbar">
+              <button id="reset-pos-btn" class="toolbar-btn" title="Reset position">↺</button>
+              <button id="regen-btn" class="toolbar-btn" title="Regenerate world">⟳</button>
+            </div>
             <div id="generation-overlay" class="generation-overlay" style="display:none">
               <div class="generation-spinner"></div>
               <span class="generation-label">Dreaming...</span>
             </div>
+            <!-- 16G: Onboarding control card -->
+            <div id="onboarding-card" class="onboarding-card" style="display:none">
+              <div class="onboarding-cols">
+                <div class="onboarding-col">
+                  <div class="onboarding-heading">⌨ Keyboard</div>
+                  <div class="onboarding-row"><kbd>W A S D</kbd> Move</div>
+                  <div class="onboarding-row"><kbd>Space</kbd> Jump</div>
+                  <div class="onboarding-row"><kbd>Shift</kbd> Sprint</div>
+                  <div class="onboarding-row"><kbd>E</kbd> Interact</div>
+                  <div class="onboarding-row"><kbd>2-6</kbd> Powers</div>
+                  <div class="onboarding-row"><kbd>V</kbd> Camera</div>
+                  <div class="onboarding-row"><kbd>Esc</kbd> Release</div>
+                </div>
+                <div class="onboarding-col">
+                  <div class="onboarding-heading">🎮 Controller</div>
+                  <div class="onboarding-row">L Stick — Move</div>
+                  <div class="onboarding-row">R Stick — Look</div>
+                  <div class="onboarding-row">A — Jump</div>
+                  <div class="onboarding-row">Bumper — Sprint</div>
+                  <div class="onboarding-row">D-pad — Powers</div>
+                  <div class="onboarding-row">RT — Use power</div>
+                  <div class="onboarding-row">B — Interact</div>
+                </div>
+              </div>
+              <div class="onboarding-footer">Click canvas to start — press <kbd>?</kbd> to reopen</div>
+            </div>
           </div>
           <div id="controls-hint" class="hint">
-            Controls: Click canvas to look around. WASD move. Space jump. Shift sprint. E interact. V camera. Esc unlock.
+            Controls: Click canvas to look around. WASD move. Space jump. Shift sprint. E interact. V camera. 1-6 powers. Esc unlock. 🎮 supported.
             <span id="camera-mode-hint" class="camera-badge">1st Person</span>
           </div>
         </article>

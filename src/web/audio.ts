@@ -169,6 +169,30 @@ export function startAmbient(world: WorldModel): void {
   }
 }
 
+/**
+ * Start ambient audio with a smooth fade-in over the given duration (seconds).
+ * Used by the cinematic intro to gradually bring sound in.
+ */
+export function startAmbientFadeIn(world: WorldModel, fadeDuration: number = 2): void {
+  const ctx = ensureContext();
+  stopAmbient();
+
+  if (!masterGain) return;
+
+  // Temporarily silence master, build layers, then ramp up
+  const prevGain = muted ? 0 : 1;
+  masterGain.gain.setValueAtTime(0, ctx.currentTime);
+
+  const profile = resolveAmbientProfile(world);
+  buildLayer(ctx, masterGain, profile.primary, 1);
+  if (profile.secondary) {
+    buildLayer(ctx, masterGain, profile.secondary, 0.5);
+  }
+
+  // Smooth fade-in
+  masterGain.gain.linearRampToValueAtTime(prevGain, ctx.currentTime + fadeDuration);
+}
+
 export function stopAmbient(): void {
   activeSources.forEach((src) => {
     try { src.stop(); } catch { /* already stopped */ }
@@ -311,4 +335,278 @@ export function playInteractionSound(): void {
   gain.connect(masterGain);
   osc.start();
   osc.stop(ctx.currentTime + 0.3);
+}
+
+// --------------- 16D: Power Sound Effects ---------------
+
+// 16E: Sustained laser loop
+let laserLoopOsc: OscillatorNode | null = null;
+let laserLoopGain: GainNode | null = null;
+let laserLoopNoise: AudioBufferSourceNode | null = null;
+let laserLoopNoiseGain: GainNode | null = null;
+
+export function startLaserLoop(): void {
+  if (muted || laserLoopOsc) return;
+  const ctx = ensureContext();
+  if (!masterGain) return;
+  // Steady buzz: sawtooth at low frequency + filtered noise
+  laserLoopOsc = ctx.createOscillator();
+  laserLoopOsc.type = "sawtooth";
+  laserLoopOsc.frequency.value = 180;
+  laserLoopGain = ctx.createGain();
+  laserLoopGain.gain.value = 0.06;
+  laserLoopOsc.connect(laserLoopGain);
+  laserLoopGain.connect(masterGain);
+  laserLoopOsc.start();
+  // Noise layer
+  laserLoopNoise = ctx.createBufferSource();
+  const nBuf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
+  const nd = nBuf.getChannelData(0);
+  for (let i = 0; i < nd.length; i++) nd[i] = (Math.random() * 2 - 1);
+  laserLoopNoise.buffer = nBuf;
+  laserLoopNoise.loop = true;
+  const nFilter = ctx.createBiquadFilter();
+  nFilter.type = "bandpass";
+  nFilter.frequency.value = 2000;
+  nFilter.Q.value = 3;
+  laserLoopNoiseGain = ctx.createGain();
+  laserLoopNoiseGain.gain.value = 0.03;
+  laserLoopNoise.connect(nFilter);
+  nFilter.connect(laserLoopNoiseGain);
+  laserLoopNoiseGain.connect(masterGain);
+  laserLoopNoise.start();
+}
+
+export function stopLaserLoop(): void {
+  if (laserLoopOsc) {
+    try { laserLoopOsc.stop(); } catch { /* ok */ }
+    try { laserLoopOsc.disconnect(); } catch { /* ok */ }
+    laserLoopOsc = null;
+  }
+  if (laserLoopGain) { try { laserLoopGain.disconnect(); } catch { /* ok */ } laserLoopGain = null; }
+  if (laserLoopNoise) {
+    try { laserLoopNoise.stop(); } catch { /* ok */ }
+    try { laserLoopNoise.disconnect(); } catch { /* ok */ }
+    laserLoopNoise = null;
+  }
+  if (laserLoopNoiseGain) { try { laserLoopNoiseGain.disconnect(); } catch { /* ok */ } laserLoopNoiseGain = null; }
+}
+
+export function playLaserFireSound(): void {
+  if (muted || !audioCtx || !masterGain) return;
+  const ctx = audioCtx;
+  const t = ctx.currentTime;
+  // Sharp zap: descending sawtooth burst
+  const osc = ctx.createOscillator();
+  osc.type = "sawtooth";
+  osc.frequency.setValueAtTime(1800, t);
+  osc.frequency.exponentialRampToValueAtTime(200, t + 0.15);
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0.12, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+  osc.connect(gain);
+  gain.connect(masterGain);
+  osc.start(t);
+  osc.stop(t + 0.2);
+}
+
+export function playLaserHitSound(): void {
+  if (muted || !audioCtx || !masterGain) return;
+  const ctx = audioCtx;
+  const t = ctx.currentTime;
+  // Impact crackle: noise burst + low thud
+  const noise = ctx.createBufferSource();
+  const noiseLen = Math.floor(ctx.sampleRate * 0.1);
+  const noiseBuf = ctx.createBuffer(1, noiseLen, ctx.sampleRate);
+  const nd = noiseBuf.getChannelData(0);
+  for (let i = 0; i < noiseLen; i++) nd[i] = (Math.random() * 2 - 1) * (1 - i / noiseLen);
+  noise.buffer = noiseBuf;
+  const noiseGain = ctx.createGain();
+  noiseGain.gain.setValueAtTime(0.08, t);
+  noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+  noise.connect(noiseGain);
+  noiseGain.connect(masterGain);
+  noise.start(t);
+  noise.stop(t + 0.12);
+  // Low thud
+  const thud = ctx.createOscillator();
+  thud.type = "sine";
+  thud.frequency.setValueAtTime(80, t);
+  thud.frequency.exponentialRampToValueAtTime(40, t + 0.1);
+  const thudGain = ctx.createGain();
+  thudGain.gain.setValueAtTime(0.1, t);
+  thudGain.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+  thud.connect(thudGain);
+  thudGain.connect(masterGain);
+  thud.start(t);
+  thud.stop(t + 0.15);
+}
+
+export function playDestructionSound(): void {
+  if (muted || !audioCtx || !masterGain) return;
+  const ctx = audioCtx;
+  const t = ctx.currentTime;
+  // Deep boom + crunch
+  const boom = ctx.createOscillator();
+  boom.type = "sine";
+  boom.frequency.setValueAtTime(60, t);
+  boom.frequency.exponentialRampToValueAtTime(25, t + 0.3);
+  const boomGain = ctx.createGain();
+  boomGain.gain.setValueAtTime(0.15, t);
+  boomGain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+  boom.connect(boomGain);
+  boomGain.connect(masterGain);
+  boom.start(t);
+  boom.stop(t + 0.4);
+  // Crunch noise
+  const noise = ctx.createBufferSource();
+  const len = Math.floor(ctx.sampleRate * 0.25);
+  const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2);
+  noise.buffer = buf;
+  const filter = ctx.createBiquadFilter();
+  filter.type = "lowpass";
+  filter.frequency.value = 2000;
+  const noiseGain = ctx.createGain();
+  noiseGain.gain.setValueAtTime(0.1, t);
+  noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+  noise.connect(filter);
+  filter.connect(noiseGain);
+  noiseGain.connect(masterGain);
+  noise.start(t);
+  noise.stop(t + 0.3);
+}
+
+export function playShockwaveSound(): void {
+  if (muted || !audioCtx || !masterGain) return;
+  const ctx = audioCtx;
+  const t = ctx.currentTime;
+  // Whomp: fast sweep down
+  const osc = ctx.createOscillator();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(300, t);
+  osc.frequency.exponentialRampToValueAtTime(30, t + 0.25);
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0.14, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+  osc.connect(gain);
+  gain.connect(masterGain);
+  osc.start(t);
+  osc.stop(t + 0.35);
+}
+
+export function playTelekinesisGrabSound(): void {
+  if (muted || !audioCtx || !masterGain) return;
+  const ctx = audioCtx;
+  const t = ctx.currentTime;
+  // Ascending hum
+  const osc = ctx.createOscillator();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(220, t);
+  osc.frequency.exponentialRampToValueAtTime(660, t + 0.2);
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0.06, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+  osc.connect(gain);
+  gain.connect(masterGain);
+  osc.start(t);
+  osc.stop(t + 0.3);
+}
+
+export function playTelekinesisThrowSound(): void {
+  if (muted || !audioCtx || !masterGain) return;
+  const ctx = audioCtx;
+  const t = ctx.currentTime;
+  // Whoosh: noise sweep
+  const noise = ctx.createBufferSource();
+  const len = Math.floor(ctx.sampleRate * 0.2);
+  const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1);
+  noise.buffer = buf;
+  const filter = ctx.createBiquadFilter();
+  filter.type = "bandpass";
+  filter.frequency.setValueAtTime(800, t);
+  filter.frequency.exponentialRampToValueAtTime(3000, t + 0.15);
+  filter.Q.value = 2;
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0.1, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+  noise.connect(filter);
+  filter.connect(gain);
+  gain.connect(masterGain);
+  noise.start(t);
+  noise.stop(t + 0.25);
+}
+
+// ── 16F: Environmental event sounds ─────────────────────────────────
+
+export function playBellTollSound(): void {
+  if (muted || !audioCtx || !masterGain) return;
+  const ctx = audioCtx;
+  const t = ctx.currentTime;
+  // Rich bell tone: fundamental + overtone
+  for (const [freq, vol] of [[220, 0.06], [550, 0.03], [880, 0.015]] as [number, number][]) {
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.value = freq;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(vol, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 1.8);
+    osc.connect(gain);
+    gain.connect(masterGain);
+    osc.start(t);
+    osc.stop(t + 2);
+  }
+}
+
+export function playThunderSound(): void {
+  if (muted || !audioCtx || !masterGain) return;
+  const ctx = audioCtx;
+  const t = ctx.currentTime;
+  // Low rumble noise burst
+  const noise = ctx.createBufferSource();
+  const len = Math.floor(ctx.sampleRate * 1.5);
+  const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1);
+  noise.buffer = buf;
+  const filter = ctx.createBiquadFilter();
+  filter.type = "lowpass";
+  filter.frequency.value = 200;
+  filter.Q.value = 1;
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0.12, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 1.4);
+  noise.connect(filter);
+  filter.connect(gain);
+  gain.connect(masterGain);
+  noise.start(t);
+  noise.stop(t + 1.5);
+}
+
+export function playDustBurstSound(): void {
+  if (muted || !audioCtx || !masterGain) return;
+  const ctx = audioCtx;
+  const t = ctx.currentTime;
+  // Soft whoosh of dust
+  const noise = ctx.createBufferSource();
+  const len = Math.floor(ctx.sampleRate * 0.3);
+  const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1);
+  noise.buffer = buf;
+  const filter = ctx.createBiquadFilter();
+  filter.type = "bandpass";
+  filter.frequency.value = 600;
+  filter.Q.value = 0.8;
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0.04, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+  noise.connect(filter);
+  filter.connect(gain);
+  gain.connect(masterGain);
+  noise.start(t);
+  noise.stop(t + 0.3);
 }
