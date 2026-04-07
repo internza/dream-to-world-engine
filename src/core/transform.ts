@@ -987,16 +987,16 @@ const CURATED_DREAMS: string[] = [
   "I'm at a rocky coast with a lighthouse and stone stairs, and a storm is forming with strong winds and dark clouds",
   "I'm near a river with a bridge and trees while sunlight reflects off the water",
   "A tropical island with warm lighthouse and driftwood surrounded by sea caves under starlight",
-  "I'm in a garden with fountains and lanterns while petals fall under a night sky",
+  "I'm standing on a rooftop in a city above the clouds, and everything is covered in mist with soft light coming through",
   "I'm standing on a cliff at the edge of the sea while a storm rolls in and waves crash against the rocks below",
   "I'm in a stone courtyard with a tall gate and ivy-covered walls while a cold wind blows through at dusk",
+  "I'm in a garden with fountains and lanterns while petals fall under a night sky",
   "I'm at a wooden dock on a foggy lake at dawn with rowboats tied along the pier and trees rising behind them",
   "I'm inside a cathedral with high arched ceilings and long windows while rain streams down the glass outside",
   "I'm standing in a field of tall grass with a farmhouse and windmill while thunderclouds gather at the horizon",
   "I'm on a cobblestone road through a quiet village with stone fences and open doors while snow falls silently",
   "I'm at the mouth of a sea cave with tidal pools and barnacled rocks while waves push in with each gust",
   "I'm crossing a rope bridge over a canyon while mist rises from the river far below and wind sways the planks",
-  "I'm beside a waterfall that drops into a still pool surrounded by mossy boulders while ferns drip with rain",
   "I'm standing on a hilltop with a ruined watchtower while the sun sets behind distant mountains and the ground is dry",
 
   // Beach / Ocean

@@ -97,9 +97,9 @@ function hideOnboarding(): void {
 const FEATURED_DREAMS = [
   "I'm at a rocky coast with a lighthouse and stone stairs, and a storm is forming with strong winds and dark clouds",
   "I'm near a river with a bridge and trees while sunlight reflects off the water",
-  "A tropical island with warm lighthouse and driftwood surrounded by sea caves under starlight",
-  "I'm in a garden with fountains and lanterns while petals fall under a night sky",
-  "I'm standing on a cliff at the edge of the sea while a storm rolls in and waves crash against the rocks below",
+  "I'm on a tropical island with warm lighthouse and driftwood surrounded by sea caves under starlight",
+  "I'm standing on a rooftop in a city above the clouds, and everything is covered in mist with soft light coming through",
+  "I'm in a frozen tundra with ice pillars and a distant fortress while aurora lights fill the dreamlike sky",
 ];
 
 function renderRecentDreams(): void {
@@ -200,15 +200,15 @@ async function generateWorld(dreamText: string): Promise<void> {
     });
   });
 
-  // 18A: Keep dream title visible for 5.5s after cinematic, then slow fade
+  // 18A: Keep dream title visible for 2s after cinematic, then fast fade
   if (dreamTitleEl) {
     setTimeout(() => {
       if (dreamTitleEl) {
-        dreamTitleEl.style.transition = "opacity 2.5s ease-out, transform 2.5s ease-out";
+        dreamTitleEl.style.transition = "opacity 1.2s ease-out, transform 1.2s ease-out";
         dreamTitleEl.style.opacity = "0";
         dreamTitleEl.style.transform = "translate(-50%, -50%) scale(0.97)";
       }
-    }, 5500);
+    }, 2000);
   }
 
   // ── Step 4: Enable controls ───────────────────────────────────────
@@ -330,11 +330,11 @@ document.addEventListener("keydown", (e) => {
       dreamTitleEl.style.opacity = "1";
       dreamTitleEl.style.transform = "translate(-50%, -50%) scale(1)";
       dreamTitleTimeout = window.setTimeout(() => {
-        dreamTitleEl.style.transition = "opacity 2s ease-out, transform 2s ease-out";
+        dreamTitleEl.style.transition = "opacity 1s ease-out, transform 1s ease-out";
         dreamTitleEl.style.opacity = "0";
         dreamTitleEl.style.transform = "translate(-50%, -50%) scale(0.96)";
         dreamTitleTimeout = null;
-      }, 4000);
+      }, 2000);
     }
   }
 });

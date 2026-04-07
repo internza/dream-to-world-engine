@@ -411,13 +411,12 @@ function disposePhysics(): void {
 }
 
 // ── Gameplay state ───────────────────────────────────────────────────
-const discoveredLandmarks = new Set<string>();
-let discoveryGraceFrames = 0; // frames to wait before proximity discovery fires
+
 
 // ── UI element refs (set at init) ────────────────────────────────────
 let interactionHint: HTMLElement | null = null;
 let feedbackText: HTMLElement | null = null;
-let discoveryText: HTMLElement | null = null;
+
 let feedbackTimer = 0;
 
 const BASE_AMBIENT = 0.4;
@@ -489,7 +488,7 @@ export function initRenderer(canvas: HTMLCanvasElement): void {
   // UI overlay refs
   interactionHint = document.getElementById("interaction-hint");
   feedbackText = document.getElementById("feedback-text");
-  discoveryText = document.getElementById("discovery-text");
+
 
   canvas.addEventListener("click", () => {
     if (!pointerLocked) {
@@ -600,7 +599,6 @@ export function initRenderer(canvas: HTMLCanvasElement): void {
       } else {
         updateMovement(dt);
         updateInteraction();
-        checkProximityDiscovery();
         updateFloating();
         updateWeather(dt);
         updateParticles(dt);
@@ -1176,8 +1174,6 @@ export function renderWorld(world: WorldModel): void {
     syncAnglesToCamera();
   }
 
-  discoveredLandmarks.clear();
-  discoveryGraceFrames = 360; // ~6s grace after each new world load
 }
 
 export function disposeWorld(): void {
@@ -1244,7 +1240,6 @@ export function disposeWorld(): void {
   activeSemantics = null;
   activeArchetype = null;
   collisionBoxes.length = 0;
-  discoveredLandmarks.clear();
   playerVelY = 0;
   isGrounded = true;
   // 16A: Reset controller & power state
@@ -3334,7 +3329,6 @@ function triggerInteraction(): void {
 
   if (tag === "primary_landmark") {
     message = "The heart of the dream pulses before you...";
-    checkLandmarkDiscovery(lookedAtObject);
 
     // Strong pulse: cascade emissive glow through all meshes in the group
     const root = findLandmarkRoot(lookedAtObject);
@@ -3397,7 +3391,6 @@ function triggerInteraction(): void {
     }
   } else if (tag === "landmark") {
     message = "You sense something important here...";
-    checkLandmarkDiscovery(lookedAtObject);
   } else {
     message = "You examine the object closely...";
   }
@@ -3410,77 +3403,6 @@ function showFeedback(msg: string): void {
     feedbackText.textContent = msg;
     feedbackText.style.opacity = "1";
     feedbackTimer = 120; // ~2 seconds at 60fps
-  }
-}
-
-// ── Gameplay: discovery ──────────────────────────────────────────────
-
-function checkLandmarkDiscovery(obj: THREE.Object3D): void {
-  const id = String(obj.id);
-  if (discoveredLandmarks.has(id)) return;
-  discoveredLandmarks.add(id);
-
-  if (discoveryText) {
-    discoveryText.textContent = `You discovered something in your dream... (${discoveredLandmarks.size} found)`;
-    discoveryText.style.opacity = "1";
-    setTimeout(() => {
-      if (discoveryText) discoveryText.style.opacity = "0";
-    }, 3000);
-  }
-
-  // Visual reward pulse on the object
-  const mat = (obj as THREE.Mesh).material;
-  if (mat instanceof THREE.MeshStandardMaterial) {
-    const orig = mat.emissiveIntensity;
-    mat.emissiveIntensity = 2.5;
-    setTimeout(() => { if (mat instanceof THREE.MeshStandardMaterial) mat.emissiveIntensity = orig; }, 800);
-  }
-}
-
-function checkProximityDiscovery(): void {
-  if (discoveryGraceFrames > 0) { discoveryGraceFrames--; return; }
-  for (const box of collisionBoxes) {
-    if (!box.isCloud) continue;
-    // Skip — proximity discovery only for landmarks, handled via interaction
-  }
-  // Check if player is near any landmark group
-  if (!worldGroup) return;
-  worldGroup.children.forEach((child: THREE.Object3D) => {
-    if (child.userData.interactionTag !== "landmark") return;
-    const wp = child.getWorldPosition(new THREE.Vector3());
-    const dist = wp.distanceTo(playerPos);
-    if (dist < 8) {
-      const id = String(child.id);
-      if (!discoveredLandmarks.has(id)) {
-        discoveredLandmarks.add(id);
-        if (discoveryText) {
-          discoveryText.textContent = `You discovered something in your dream... (${discoveredLandmarks.size} found)`;
-          discoveryText.style.opacity = "1";
-          setTimeout(() => { if (discoveryText) discoveryText.style.opacity = "0"; }, 3000);
-        }
-      }
-    }
-  });
-
-  // 16F: Proximity-triggered landmark reactions
-  for (const le of landmarkEvents) {
-    if (!le.group.visible) continue;
-    const wp = le.group.getWorldPosition(new THREE.Vector3());
-    const dist = wp.distanceTo(playerPos);
-    if (dist < 6 && !le.group.userData._proximityTriggered) {
-      le.group.userData._proximityTriggered = true;
-      // Subtle glow when player approaches
-      le.group.traverse((child: THREE.Object3D) => {
-        if (child instanceof THREE.Mesh && child.material instanceof THREE.MeshStandardMaterial) {
-          const m = child.material;
-          m.emissive.setHex(0x224466);
-          m.emissiveIntensity = 0.3;
-          setTimeout(() => { m.emissiveIntensity = 0; m.emissive.setHex(0x000000); }, 2500);
-        }
-      });
-      // Reset after cooldown
-      setTimeout(() => { le.group.userData._proximityTriggered = false; }, 10000);
-    }
   }
 }
 
