@@ -200,15 +200,15 @@ async function generateWorld(dreamText: string): Promise<void> {
     });
   });
 
-  // 18A: Keep dream title visible for 5.5s after cinematic, then slow fade
+  // 18A: Keep dream title visible for 2s after cinematic, then fast fade
   if (dreamTitleEl) {
     setTimeout(() => {
       if (dreamTitleEl) {
-        dreamTitleEl.style.transition = "opacity 2.5s ease-out, transform 2.5s ease-out";
+        dreamTitleEl.style.transition = "opacity 1.2s ease-out, transform 1.2s ease-out";
         dreamTitleEl.style.opacity = "0";
         dreamTitleEl.style.transform = "translate(-50%, -50%) scale(0.97)";
       }
-    }, 5500);
+    }, 2000);
   }
 
   // ── Step 4: Enable controls ───────────────────────────────────────
@@ -330,11 +330,11 @@ document.addEventListener("keydown", (e) => {
       dreamTitleEl.style.opacity = "1";
       dreamTitleEl.style.transform = "translate(-50%, -50%) scale(1)";
       dreamTitleTimeout = window.setTimeout(() => {
-        dreamTitleEl.style.transition = "opacity 2s ease-out, transform 2s ease-out";
+        dreamTitleEl.style.transition = "opacity 1s ease-out, transform 1s ease-out";
         dreamTitleEl.style.opacity = "0";
         dreamTitleEl.style.transform = "translate(-50%, -50%) scale(0.96)";
         dreamTitleTimeout = null;
-      }, 4000);
+      }, 2000);
     }
   }
 });
