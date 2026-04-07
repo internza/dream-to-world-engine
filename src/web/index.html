@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Dream to World</title>
     <link rel="stylesheet" href="/web/styles.css" />
-    <link rel="icon" href="/src/web/favicon.png" type="image/png">   
+    <link rel="icon" type="image/png" href="/web/favicon.png">
   </head>
   <body>
     <div class="page">
@@ -76,6 +76,7 @@
             <div id="canvas-toolbar" class="canvas-toolbar">
               <button id="reset-pos-btn" class="toolbar-btn" title="Reset position">↺</button>
               <button id="regen-btn" class="toolbar-btn" title="Regenerate world">⟳</button>
+              <button id="variation-btn" class="toolbar-btn" title="Toggle dream variation (stable vs varied)">🎲</button>
             </div>
             <div id="generation-overlay" class="generation-overlay" style="display:none">
               <div class="generation-spinner"></div>
@@ -85,31 +86,32 @@
             <div id="onboarding-card" class="onboarding-card" style="display:none">
               <div class="onboarding-cols">
                 <div class="onboarding-col">
-                  <div class="onboarding-heading">⌨ Keyboard</div>
-                  <div class="onboarding-row"><kbd>W A S D</kbd> Move</div>
-                  <div class="onboarding-row"><kbd>Space</kbd> Jump</div>
-                  <div class="onboarding-row"><kbd>Shift</kbd> Sprint</div>
-                  <div class="onboarding-row"><kbd>E</kbd> Interact</div>
+                  <div class="onboarding-heading">⌨ Keyboard — Flight Mode</div>
+                  <div class="onboarding-row"><kbd>W A S D</kbd> Fly forward/back/strafe</div>
+                  <div class="onboarding-row"><kbd>Space</kbd> Rise</div>
+                  <div class="onboarding-row"><kbd>Shift</kbd> Descend</div>
+                  <div class="onboarding-row"><kbd>Mouse</kbd> Look around</div>
                   <div class="onboarding-row"><kbd>2-6</kbd> Powers</div>
+                  <div class="onboarding-row"><kbd>E</kbd> Interact</div>
                   <div class="onboarding-row"><kbd>V</kbd> Camera</div>
-                  <div class="onboarding-row"><kbd>Esc</kbd> Release</div>
+                  <div class="onboarding-row"><kbd>Esc</kbd> Release cursor</div>
                 </div>
                 <div class="onboarding-col">
-                  <div class="onboarding-heading">🎮 Controller</div>
-                  <div class="onboarding-row">L Stick — Move</div>
+                  <div class="onboarding-heading">🎮 Controller — Flight Mode</div>
+                  <div class="onboarding-row">L Stick — Fly</div>
                   <div class="onboarding-row">R Stick — Look</div>
-                  <div class="onboarding-row">A — Jump</div>
-                  <div class="onboarding-row">Bumper — Sprint</div>
+                  <div class="onboarding-row">A — Rise</div>
+                  <div class="onboarding-row">B — Descend</div>
+                  <div class="onboarding-row">Bumper — Speed boost</div>
                   <div class="onboarding-row">D-pad — Powers</div>
                   <div class="onboarding-row">RT — Use power</div>
-                  <div class="onboarding-row">B — Interact</div>
                 </div>
               </div>
-              <div class="onboarding-footer">Click canvas to start — press <kbd>?</kbd> to reopen</div>
+              <div class="onboarding-footer">You start in Flight mode · Click canvas to explore · press <kbd>?</kbd> to reopen</div>
             </div>
           </div>
           <div id="controls-hint" class="hint">
-            Controls: Click canvas to look around. WASD move. Space jump. Shift sprint. E interact. V camera. 1-6 powers. Esc unlock. 🎮 supported.
+            Flight mode: WASD fly. Space rise. Shift descend. Mouse look. 1-6 powers. E interact. V camera. Esc unlock. 🎮 supported.
             <span id="camera-mode-hint" class="camera-badge">1st Person</span>
           </div>
         </article>

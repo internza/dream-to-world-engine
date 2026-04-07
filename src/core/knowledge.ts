@@ -82,6 +82,18 @@ const CONCEPTS: ConceptEntry[] = [
   { canonical: "crypt",    type: "place", synonyms: ["tomb", "mausoleum", "sepulcher", "necropolis", "burial"],         generatorFamily: "cave", variant: "crypt" },
   { canonical: "dungeon",  type: "place", synonyms: ["prison", "cell", "vault", "oubliette"],                           generatorFamily: "cave", variant: "dungeon" },
 
+  // ─── Interior / Indoor ────────────────────────────────────────────
+  { canonical: "hallway",    type: "place", synonyms: ["corridor", "passage", "passageway", "vestibule", "gallery"],    generatorFamily: "architecture", variant: "hallway" },
+  { canonical: "room",       type: "place", synonyms: ["chamber", "hall", "quarters", "parlor", "den"],                 generatorFamily: "architecture", variant: "room" },
+  { canonical: "classroom",  type: "place", synonyms: ["lecture hall", "schoolroom"],                                    generatorFamily: "architecture", variant: "classroom" },
+  { canonical: "office",     type: "place", synonyms: ["study", "workspace", "cubicle"],                                generatorFamily: "architecture", variant: "office" },
+  { canonical: "lobby",      type: "place", synonyms: ["foyer", "atrium", "reception", "entrance hall"],                generatorFamily: "architecture", variant: "lobby" },
+  { canonical: "warehouse",  type: "place", synonyms: ["storehouse", "depot", "hangar", "storage"],                     generatorFamily: "architecture", variant: "warehouse" },
+  { canonical: "basement",   type: "place", synonyms: ["cellar", "undercroft", "crypt"],                                generatorFamily: "cave", variant: "basement" },
+  { canonical: "school",     type: "place", synonyms: ["academy", "university", "college", "campus", "institute"],      generatorFamily: "architecture", variant: "school" },
+  { canonical: "hospital",   type: "place", synonyms: ["clinic", "infirmary", "ward", "asylum"],                        generatorFamily: "architecture", variant: "hospital" },
+  { canonical: "shop",       type: "place", synonyms: ["store", "boutique", "tavern", "inn", "pub", "bar", "cafe"],     generatorFamily: "urban", variant: "shop" },
+
   // ─── Surreal / Void ───────────────────────────────────────────────
   { canonical: "space",      type: "place", synonyms: ["cosmos", "universe", "galaxy", "nebula", "void"],               generatorFamily: "celestial", variant: "cosmos" },
   { canonical: "dreamscape", type: "place", synonyms: ["dreamworld", "mindscape", "subconscious"],                      generatorFamily: "surreal_abstract", variant: "dreamscape" },

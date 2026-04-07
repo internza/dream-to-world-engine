@@ -361,19 +361,20 @@ body.has-expanded::before {
 }
 
 .generation-spinner {
-  width: 28px;
-  height: 28px;
-  border: 3px solid rgba(45, 212, 191, 0.2);
+  width: 32px;
+  height: 32px;
+  border: 2px solid rgba(45, 212, 191, 0.15);
   border-top-color: var(--accent);
   border-radius: 50%;
-  animation: spin 0.8s linear infinite;
+  animation: spin 0.9s linear infinite;
 }
 
 .generation-label {
-  color: var(--accent);
-  font-size: 0.9rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  color: rgba(200, 230, 228, 0.85);
+  font-size: 0.82rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
 @keyframes spin {
@@ -492,39 +493,55 @@ body.has-expanded::before {
   margin-left: -0.75px;
 }
 
-/* ── 16G: Dream title overlay — enhanced with subtitle ──── */
+/* ── 18A: Cinematic dream title overlay — large, readable, elegant ──── */
 .dream-title-overlay {
   position: absolute;
-  top: 50%;
+  top: 42%;
   left: 50%;
-  transform: translate(-50%, -50%);
+  transform: translate(-50%, -50%) scale(0.94);
   text-align: center;
-  max-width: 80%;
-  padding: 20px 36px;
-  border-radius: 14px;
-  background: linear-gradient(135deg, rgba(0, 0, 0, 0.6), rgba(15, 15, 35, 0.5));
-  border: 1px solid rgba(45, 212, 191, 0.2);
-  backdrop-filter: blur(6px);
+  max-width: 88%;
+  width: max-content;
+  padding: 28px 48px 24px;
+  border-radius: 4px;
+  background: linear-gradient(160deg, rgba(0, 0, 0, 0.78) 0%, rgba(8, 10, 22, 0.68) 100%);
+  border-top: 1px solid rgba(255, 255, 255, 0.18);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-left: none;
+  border-right: none;
+  box-shadow: 0 8px 60px rgba(0, 0, 0, 0.6), 0 0 80px rgba(45, 212, 191, 0.04);
+  backdrop-filter: blur(12px);
   pointer-events: none;
   z-index: 15;
-  transition: opacity 1.2s ease;
-  letter-spacing: 0.04em;
+  transition: opacity 1.4s ease, transform 1.4s cubic-bezier(0.22, 1, 0.36, 1);
+  letter-spacing: 0.02em;
 }
 
 .dream-title-text {
-  color: rgba(255, 255, 255, 0.95);
-  font-size: clamp(1.2rem, 2.6vw, 2rem);
+  color: rgba(255, 255, 255, 0.97);
+  font-size: clamp(1.35rem, 3vw, 2.4rem);
   font-weight: 700;
-  line-height: 1.4;
-  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.8);
+  line-height: 1.35;
+  text-shadow: 0 2px 20px rgba(0, 0, 0, 0.9), 0 0 40px rgba(45, 212, 191, 0.12);
+  letter-spacing: 0.025em;
+}
+
+/* 18A: Divider line between title and subtitle */
+.dream-title-overlay::after {
+  content: "";
+  display: block;
+  width: 40px;
+  height: 1px;
+  background: rgba(45, 212, 191, 0.5);
+  margin: 12px auto 0;
 }
 
 .dream-title-sub {
-  color: rgba(45, 212, 191, 0.8);
-  font-size: clamp(0.7rem, 1.2vw, 0.9rem);
+  color: rgba(180, 220, 215, 0.75);
+  font-size: clamp(0.65rem, 1.1vw, 0.82rem);
   font-weight: 500;
-  margin-top: 6px;
-  letter-spacing: 0.08em;
+  margin-top: 14px;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
 }
 
@@ -713,4 +730,50 @@ body.has-expanded::before {
   background: rgba(45, 212, 191, 0.12);
   color: var(--accent);
   border-color: rgba(45, 212, 191, 0.3);
+}
+
+.recent-dream-chip--featured {
+  border-color: rgba(45, 212, 191, 0.25);
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.recent-dream-chip--featured:hover {
+  background: rgba(45, 212, 191, 0.18);
+  border-color: rgba(45, 212, 191, 0.5);
+}
+
+/* ── 18A: Cinematic vignette — heavier for immersion ─────────── */
+.vignette {
+  background: radial-gradient(ellipse at center, transparent 48%, rgba(0, 0, 0, 0.45) 100%);
+}
+
+/* ── 18D: Power bar active item — pulse animation ──────────── */
+@keyframes powerPulse {
+  0%   { box-shadow: 0 0 6px rgba(45, 212, 191, 0.15); }
+  50%  { box-shadow: 0 0 14px rgba(45, 212, 191, 0.4); }
+  100% { box-shadow: 0 0 6px rgba(45, 212, 191, 0.15); }
+}
+
+.power-bar-item.is-active {
+  animation: powerPulse 2s ease-in-out infinite;
+}
+
+/* ── 18H: Discovery text pop-in ─────────────────────────────── */
+@keyframes popIn {
+  from { transform: translateX(-50%) scale(0.9); opacity: 0; }
+  to   { transform: translateX(-50%) scale(1);   opacity: 1; }
+}
+
+.discovery-text {
+  animation: popIn 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* ── 18A: Canvas expand state — smoother letterbox ──────────── */
+.canvas-wrap.is-expanded {
+  border-radius: 0;
+}
+
+/* ── 18G: Generation overlay — cinematic black ───────────────── */
+.generation-overlay {
+  background: rgba(4, 5, 8, 0.94);
 }

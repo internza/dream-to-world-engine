@@ -1,6 +1,6 @@
-import { transformDreamToWorld, generateRandomDream, getLastParseDebug } from "../core/transform.js";
+import { transformDreamToWorld, getRandomDream, getLastParseDebug } from "../core/transform.js";
 import type { WorldModel, DreamProfile } from "../core/transform.js";
-import { initRenderer, renderWorld, setControlsEnabled, toggleCameraMode, getCameraMode, startCinematicIntro, isCinematicActive, resetPlayerPosition, getCurrentPower, disposeWorld } from "./renderer.js";
+import { initRenderer, renderWorld, setControlsEnabled, toggleCameraMode, getCameraMode, startCinematicIntro, isCinematicActive, resetPlayerPosition, getCurrentPower, disposeWorld, setVariationEnabled, getVariationEnabled } from "./renderer.js";
 import { startAmbient, startAmbientFadeIn, toggleMute, startWindLayer, stopWindLayer, resolveAmbientProfile } from "./audio.js";
 
 const input = document.querySelector<HTMLTextAreaElement>("#dream-input");
@@ -18,6 +18,7 @@ const generationOverlay = document.getElementById("generation-overlay");
 const helpBtn = document.getElementById("help-btn");
 const resetPosBtn = document.getElementById("reset-pos-btn");
 const regenBtn = document.getElementById("regen-btn");
+const variationBtn = document.getElementById("variation-btn"); // 18H
 const onboardingCard = document.getElementById("onboarding-card");
 const recentDreamsEl = document.getElementById("recent-dreams");
 const powerBar = document.getElementById("power-bar");
@@ -93,20 +94,26 @@ function hideOnboarding(): void {
 }
 
 // ── 16G: Recent dreams chip rendering ────────────────────────────────
+const FEATURED_DREAMS = [
+  "I'm at a rocky coast with a lighthouse and stone stairs, and a storm is forming with strong winds and dark clouds",
+  "I'm near a river with a bridge and trees while sunlight reflects off the water",
+  "A tropical island with warm lighthouse and driftwood surrounded by sea caves under starlight",
+  "I'm in a garden with fountains and lanterns while petals fall under a night sky",
+  "I'm standing on a cliff at the edge of the sea while a storm rolls in and waves crash against the rocks below",
+];
+
 function renderRecentDreams(): void {
   if (!recentDreamsEl) return;
-  const history = loadDreamHistory();
-  const recent = history.slice(-5).reverse();
   recentDreamsEl.innerHTML = "";
-  if (!recent.length) return;
-  for (const entry of recent) {
+
+  for (const dream of FEATURED_DREAMS) {
     const chip = document.createElement("button");
     chip.className = "recent-dream-chip";
-    chip.textContent = entry.dream.length > 40 ? entry.dream.slice(0, 37) + "\u2026" : entry.dream;
-    chip.title = entry.dream;
+    chip.textContent = dream.length > 40 ? dream.slice(0, 37) + "\u2026" : dream;
+    chip.title = dream;
     chip.addEventListener("click", () => {
-      if (input) input.value = entry.dream;
-      generateWorldWithMemory(entry.dream);
+      if (input) input.value = dream;
+      generateWorldWithMemory(dream);
     });
     recentDreamsEl.appendChild(chip);
   }
@@ -118,7 +125,7 @@ async function generateWorld(dreamText: string): Promise<void> {
 
   if (!sanitized) {
     // Empty → generate a random dream as fallback
-    const fallback = generateRandomDream();
+    const fallback = getRandomDream();
     if (input) input.value = fallback;
     await generateWorld(fallback);
     return;
@@ -165,13 +172,22 @@ async function generateWorld(dreamText: string): Promise<void> {
       dreamTitleText.textContent = sanitized.length > 120 ? sanitized.slice(0, 117) + "\u2026" : sanitized;
     }
     if (dreamTitleSub) {
-      const env = world.semantics.environment || "";
+      // 18A: Richer subtitle — scene type + mood + weather/time
+      const sceneLabel = (world.sceneType || "").replace(/_/g, " ");
       const mood = world.semantics.mood || "";
-      const parts = [env, mood].filter(Boolean);
-      dreamTitleSub.textContent = parts.length ? parts.join(" \u00B7 ") : "";
+      const time = world.semantics.time || "";
+      const weather = (world.semantics.weather && world.semantics.weather !== "clear") ? world.semantics.weather : "";
+      // 18A: Add primary entity hints (up to 2 notable entities for context)
+      const notableEntities = world.entities
+        .filter(e => e.landmarkRole === "primary_landmark" || e.landmarkRole === "secondary_landmark")
+        .slice(0, 2)
+        .map(e => e.attributes.name);
+      const parts = [sceneLabel, mood, weather || time, ...notableEntities].filter(Boolean);
+      dreamTitleSub.textContent = parts.length ? parts.join(" · ") : "";
     }
-    dreamTitleEl.style.transition = "opacity 0.8s ease-in";
+    dreamTitleEl.style.transition = "opacity 1.0s ease-in, transform 1.4s cubic-bezier(0.22,1,0.36,1)";
     dreamTitleEl.style.opacity = "1";
+    dreamTitleEl.style.transform = "translate(-50%, -50%) scale(1)";
   }
 
   // Start ambient audio with fade-in during cinematic
@@ -184,10 +200,15 @@ async function generateWorld(dreamText: string): Promise<void> {
     });
   });
 
-  // 16G: Fade out dream title after cinematic
+  // 18A: Keep dream title visible for 5.5s after cinematic, then slow fade
   if (dreamTitleEl) {
-    dreamTitleEl.style.transition = "opacity 1.2s ease-out";
-    dreamTitleEl.style.opacity = "0";
+    setTimeout(() => {
+      if (dreamTitleEl) {
+        dreamTitleEl.style.transition = "opacity 2.5s ease-out, transform 2.5s ease-out";
+        dreamTitleEl.style.opacity = "0";
+        dreamTitleEl.style.transform = "translate(-50%, -50%) scale(0.97)";
+      }
+    }, 5500);
   }
 
   // ── Step 4: Enable controls ───────────────────────────────────────
@@ -201,22 +222,8 @@ async function generateWorld(dreamText: string): Promise<void> {
     setTimeout(() => { hint.style.opacity = "0.4"; }, 3000);
   }
 
-  // 16G: Show onboarding card on first entry
-  if (onboardingCard && !onboardingShown) {
-    onboardingShown = true;
-    onboardingCard.style.display = "block";
-    setTimeout(() => { onboardingCard!.style.opacity = "1"; }, 50);
-    // Auto-hide after 6s
-    onboardingAutoHide = window.setTimeout(() => {
-      hideOnboarding();
-    }, 6000);
-  }
-
   // 16G: Show power bar
   if (powerBar) powerBar.classList.add("is-visible");
-
-  // 16G: Update recent dreams chips
-  renderRecentDreams();
 
   lastDreamText = sanitized;
   isGenerating = false;
@@ -255,7 +262,7 @@ button.addEventListener("click", () => {
 
 if (randomBtn) {
   randomBtn.addEventListener("click", () => {
-    const dream = generateRandomDream();
+    const dream = getRandomDream();
     input.value = dream;
     generateWorld(dream);
   });
@@ -288,6 +295,19 @@ if (regenBtn) {
   });
 }
 
+// 18H: Variation toggle button
+if (variationBtn) {
+  const updateVariationLabel = () => {
+    variationBtn.textContent = getVariationEnabled() ? "🎲" : "📌";
+    variationBtn.title = getVariationEnabled() ? "Variation ON — each generation differs" : "Stable — same dream always same world";
+  };
+  updateVariationLabel();
+  variationBtn.addEventListener("click", () => {
+    setVariationEnabled(!getVariationEnabled());
+    updateVariationLabel();
+  });
+}
+
 // Hide onboarding on canvas click (pointer lock request)
 if (canvas) {
   canvas.addEventListener("click", () => {
@@ -296,6 +316,28 @@ if (canvas) {
     }
   });
 }
+
+// ── 17F: 'T' key to re-show dream title overlay ─────────────────────
+let dreamTitleTimeout: number | null = null;
+document.addEventListener("keydown", (e) => {
+  if (e.key === "t" || e.key === "T") {
+    // Don't trigger when typing in input
+    if (document.activeElement === input) return;
+    const dreamTitleEl = document.getElementById("dream-title-overlay");
+    if (dreamTitleEl && lastDreamText) {
+      if (dreamTitleTimeout !== null) clearTimeout(dreamTitleTimeout);
+      dreamTitleEl.style.transition = "opacity 0.4s ease-in, transform 0.6s cubic-bezier(0.22,1,0.36,1)";
+      dreamTitleEl.style.opacity = "1";
+      dreamTitleEl.style.transform = "translate(-50%, -50%) scale(1)";
+      dreamTitleTimeout = window.setTimeout(() => {
+        dreamTitleEl.style.transition = "opacity 2s ease-out, transform 2s ease-out";
+        dreamTitleEl.style.opacity = "0";
+        dreamTitleEl.style.transform = "translate(-50%, -50%) scale(0.96)";
+        dreamTitleTimeout = null;
+      }, 4000);
+    }
+  }
+});
 
 // ── Dream Memory (Scope H) ───────────────────────────────────────────
 const DREAM_HISTORY_KEY = "dtwe_dream_history";
@@ -482,3 +524,6 @@ function updateDebugPanel(): void {
 function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
+
+// ── Init: show featured chips immediately on page load ───────────────
+renderRecentDreams();
