@@ -32,6 +32,13 @@ const tests = [
   "A vast arena surrounded by lava streams with shadowy creatures and a bell tower",
   "A hidden shrine near a campfire with animals and stone altars in a cave",
   "An ancient spire above a frozen lake with guardians and swirling snow",
+  // 19M Validation dreams (Interior Detection, Crowd/Density, Scene Intelligence)
+  "inside a school hallway with flickering lights and dusty books",
+  "lots of people in a crowded city with neon signs at night",
+  "an empty desert with a single broken tower under the stars",
+  "A dark abandoned hospital corridor with broken windows",
+  "A bustling bazaar in a golden temple at sunset",
+  "A quiet room with a mirror and floating candles",
 ];
 
 // Expected archetypes for 14B validation:
@@ -79,6 +86,20 @@ const tests = [
 //          guardians → living presence (16C humanoid), weather=snow (15),
 //          layout=layered (above), archetype likely castle_sky or dream_zone
 
+// Expected 19M validation:
+// Test 25: "inside a school hallway..." → sceneType=interior (detectInteriorHint),
+//          hallway detected via multi-word collapse ("school hallway"), density=balanced
+// Test 26: "lots of people in a crowded city..." → density=dense (crowd hint from
+//          "lots of" + "crowded"), sceneType=city, time=night
+// Test 27: "an empty desert..." → density=sparse (EMPTY_WORDS "empty"),
+//          sceneType=desert, time=night (stars)
+// Test 28: "dark abandoned hospital corridor..." → sceneType=interior
+//          (detectInteriorHint from "hospital"/"corridor"), mood=dark
+// Test 29: "bustling bazaar in golden temple..." → density=dense (crowd hint
+//          "bustling"), sceneType=temple, time=sunset
+// Test 30: "quiet room with mirror and floating candles..." → sceneType=interior
+//          (detectInteriorHint from "room"), mood=calm/mystical
+
 // Simple ambient category resolver (mirrors audio.ts resolveAmbientProfile for testing)
 function testAmbientCategory(names) {
   if (["ocean","sea","beach","lake","harbor","reef"].some(w => names.has(w))) return "ocean";
@@ -97,6 +118,7 @@ for (let i = 0; i < tests.length; i++) {
   const names = new Set(w.entities.map(e => e.attributes.name));
   console.log("--- Test " + (i + 1) + ": " + d);
   console.log("Archetype: " + w.archetype);
+  console.log("Scene Type: " + (w.sceneType ?? "n/a"));
   console.log("Primary Landmark ID: " + (w.primaryLandmarkId ?? "none"));
   console.log("Ambient Audio: " + testAmbientCategory(names));
   // 15C: Dream profile output

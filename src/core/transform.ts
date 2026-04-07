@@ -22,6 +22,12 @@ export type EnvironmentArchetype =
   | "castle_sky"
   | "dream_zone";
 
+// ── 17A: Scene type classification ───────────────────────────────────
+export type SceneType =
+  | "beach" | "city" | "forest" | "mountain" | "cave"
+  | "arena" | "temple" | "interior" | "surreal" | "ocean"
+  | "desert" | "frozen" | "sky" | "generic";
+
 export interface WorldModel {
   entities: WorldEntity[];
   relationships: WorldRelation[];
@@ -29,6 +35,7 @@ export interface WorldModel {
   archetype: EnvironmentArchetype;
   primaryLandmarkId: string | null;
   dreamProfile: DreamProfile;
+  sceneType: SceneType;
 }
 
 // ── 15C: Dream intelligence layer ────────────────────────────────────
@@ -125,7 +132,64 @@ export function normalizeDream(dream: string): string {
     .toLowerCase()
     .replace(/\bi'm\b/g, "i am")
     .replace(/\bcan't\b/g, "cannot")
-    .replace(/\bwon't\b/g, "will not");
+    .replace(/\bwon't\b/g, "will not")
+    // 19A: Multi-word phrase collapsing — merge compound concepts
+    .replace(/\bschool\s+hallway\b/g, "hallway school")
+    .replace(/\bhospital\s+corridor\b/g, "corridor hospital")
+    .replace(/\bcity\s+street[s]?\b/g, "street city")
+    .replace(/\bfloating\s+island[s]?\b/g, "floating island")
+    .replace(/\bocean\s+floor\b/g, "ocean")
+    .replace(/\bdeep\s+sea\b/g, "deep ocean")
+    .replace(/\bopen\s+field[s]?\b/g, "vast field")
+    .replace(/\btrain\s+station\b/g, "station")
+    .replace(/\bbus\s+stop\b/g, "station")
+    .replace(/\bparking\s+lot\b/g, "plaza")
+    .replace(/\bshopping\s+mall\b/g, "bazaar")
+    .replace(/\btown\s+square\b/g, "plaza")
+    .replace(/\bclock\s+tower\b/g, "clock tower");
+}
+
+// ── 19A: Crowd / population / density hints from text ────────────────
+const CROWD_WORDS = new Set([
+  "crowded", "bustling", "packed", "teeming", "swarming",
+  "busy", "populated", "full", "overflowing", "thriving"
+]);
+const MANY_PHRASES = /\b(lots?\s+of|many|hundreds?\s+of|thousands?\s+of|crowd\s+of|swarm\s+of|group\s+of)\b/;
+const EMPTY_WORDS = new Set([
+  "empty", "deserted", "barren", "abandoned", "desolate",
+  "lonely", "solitary", "isolated", "vacant", "hollow"
+]);
+
+// ── 19A: Interior-indicating words ───────────────────────────────────
+const INTERIOR_WORDS = new Set([
+  "hallway", "corridor", "room", "classroom", "office",
+  "lobby", "warehouse", "basement", "school", "hospital",
+  "shop", "library", "house", "mansion",
+  "building", "prison",
+  "vault", "cellar", "atrium",
+  "monastery", "barracks", "tavern", "inn"
+]);
+
+function detectCrowdHint(text: string): "crowded" | "empty" | "none" {
+  const lower = text.toLowerCase();
+  if (MANY_PHRASES.test(lower)) return "crowded";
+  const words = lower.split(/\s+/);
+  if (words.some((w) => CROWD_WORDS.has(w))) return "crowded";
+  if (words.some((w) => EMPTY_WORDS.has(w))) return "empty";
+  return "none";
+}
+
+function detectInteriorHint(entities: WorldEntity[], relationships: WorldRelation[]): boolean {
+  // Check for explicit interior-indicating entity names
+  const names = new Set(entities.map((e) => e.attributes.name));
+  if ([...names].some((n) => INTERIOR_WORDS.has(n))) return true;
+  // Check for "inside" relationships pointing to an interior-capable place
+  const entityById = new Map(entities.map((e) => [e.id, e]));
+  return relationships.some((r) => {
+    if (r.type !== "inside") return false;
+    const target = entityById.get(r.to);
+    return target ? INTERIOR_WORDS.has(target.attributes.name) : false;
+  });
 }
 
 export function tokenizeDream(dream: string): string[] {
@@ -145,7 +209,9 @@ export function classifyWord(word: string): EntityType {
     "sky", "void", "realm", "cliff", "canyon", "harbor",
     "plaza", "bazaar", "marsh", "glacier", "tundra", "oasis",
     "arena", "library", "crypt", "dungeon", "dreamscape",
-    "volcano", "plateau", "reef", "rooftop"
+    "volcano", "plateau", "reef", "rooftop",
+    "hallway", "corridor", "classroom", "office", "lobby",
+    "warehouse", "basement", "school", "hospital", "shop"
   ];
   const objects = [
     "tower", "towers", "ship", "car", "door", "tree", "trees",
@@ -235,6 +301,9 @@ export function transformDreamToWorld(dream: string): WorldModel {
   const normalized = normalizeDream(dream);
   const allTokens = normalized.match(/[a-z]+/g) ?? [];
   const canonTokens = buildCanonTokens(allTokens);
+
+  // 19A: Detect crowd/density hint from original text before tokenization
+  const crowdHint = detectCrowdHint(dream);
 
   const entities: WorldEntity[] = [];
   const relationships: WorldRelation[] = [];
@@ -455,7 +524,7 @@ export function transformDreamToWorld(dream: string): WorldModel {
     });
   }
 
-  const semantics = inferSemantics(entities);
+  const semantics = inferSemantics(entities, crowdHint);
   const archetype = resolveEnvironmentArchetype(entities, relationships, semantics);
 
   // ── 14C: Assign landmark roles ────────────────────────────────────
@@ -476,7 +545,48 @@ export function transformDreamToWorld(dream: string): WorldModel {
   // ── 15C: Build dream intelligence profile ─────────────────────────
   const dreamProfile = buildDreamProfile(entities, relationships, semantics);
 
-  return { entities, relationships, semantics, archetype, primaryLandmarkId, dreamProfile };
+  // ── 17A: Scene type classification ────────────────────────────────
+  const sceneType = classifySceneType(entities, semantics, relationships);
+
+  return { entities, relationships, semantics, archetype, primaryLandmarkId, dreamProfile, sceneType };
+}
+
+// ── 17A/19A: Scene type classification with relationship context ─────
+function classifySceneType(entities: WorldEntity[], semantics: SemanticTags, relationships: WorldRelation[]): SceneType {
+  const names = new Set(entities.map((e) => e.attributes.name));
+
+  // 20B: Interior scenes removed — remap to city/temple fallback
+  // (interior detection is now bypassed; interior keywords map to city)
+
+  // Priority-ordered rules: first match wins
+  const rules: Array<[SceneType, string[]]> = [
+    ["beach",    ["beach", "shore", "coast", "shoreline"]],
+    ["ocean",    ["ocean", "sea", "reef", "harbor", "island"]],
+    ["cave",     ["cave", "crypt", "dungeon", "grotto", "cavern", "basement"]],
+    // 20B: Former interior keywords now map to city (strongest outdoor fallback)
+    ["city",     ["school", "office", "room", "hallway", "library", "house", "building", "classroom", "bedroom", "kitchen", "corridor", "lobby", "warehouse", "hospital", "shop"]],
+    ["arena",    ["arena", "colosseum", "stadium"]],
+    ["temple",   ["temple", "cathedral", "shrine", "sanctuary", "church", "chapel", "altar"]],
+    ["city",     ["city", "street", "village", "town", "plaza", "bazaar", "rooftop", "buildings", "metropolis"]],
+    ["forest",   ["forest", "trees", "tree", "jungle", "garden", "woods"]],
+    ["mountain", ["mountain", "cliff", "valley", "canyon", "volcano", "plateau", "mesa", "peak"]],
+    ["desert",   ["desert", "oasis", "dunes", "sand", "savanna"]],
+    ["frozen",   ["glacier", "tundra", "ice", "frozen"]],
+    ["sky",      ["clouds", "cloud", "sky", "floating"]],
+    ["surreal",  ["dreamscape", "void", "realm", "abyss", "labyrinth", "mirror"]],
+  ];
+
+  for (const [scene, keywords] of rules) {
+    if (keywords.some((k) => names.has(k))) return scene;
+  }
+
+  // Fallback from semantics.environment
+  const envMap: Partial<Record<EnvironmentType, SceneType>> = {
+    ocean: "ocean", coastal: "beach", forest: "forest", city: "city",
+    sky: "sky", mountain: "mountain", desert: "desert", cave: "cave",
+    frozen: "frozen", ruins: "temple", surreal: "surreal", void: "surreal",
+  };
+  return envMap[semantics.environment] ?? "generic";
 }
 
 // ── Environment archetype resolution (Iter 14B) ──────────────────────
@@ -649,8 +759,8 @@ function assignLandmarkRoles(
   return primaryId;
 }
 
-// ── Semantic tag inference (expanded Iter 16) ─────────────────────────
-function inferSemantics(entities: WorldEntity[]): SemanticTags {
+// ── Semantic tag inference (expanded Iter 16/19A) ─────────────────────
+function inferSemantics(entities: WorldEntity[], crowdHint: "crowded" | "empty" | "none" = "none"): SemanticTags {
   const names = new Set(entities.map((e) => e.attributes.name));
   const all = [...names];
 
@@ -659,7 +769,7 @@ function inferSemantics(entities: WorldEntity[]): SemanticTags {
     ["ocean",     ["ocean", "sea"]],
     ["coastal",   ["beach", "harbor", "reef", "island", "shore", "coast", "lighthouse"]],
     ["forest",    ["forest", "trees", "tree", "jungle", "garden", "marsh"]],
-    ["city",      ["city", "street", "village", "building", "buildings", "plaza", "bazaar", "rooftop"]],
+    ["city",      ["city", "street", "village", "building", "buildings", "plaza", "bazaar", "rooftop", "school", "hospital", "shop", "house", "office", "warehouse", "library", "hallway", "corridor"]],
     ["sky",       ["clouds", "cloud", "sky", "floating"]],
     ["mountain",  ["mountain", "cliff", "valley", "canyon", "volcano", "plateau"]],
     ["desert",    ["desert", "oasis"]],
@@ -718,9 +828,12 @@ function inferSemantics(entities: WorldEntity[]): SemanticTags {
   else if (all.some((n) => ["tiny", "small", "miniature"].includes(n))) scale = "tiny";
   else if (all.some((n) => ["endless", "infinite", "vast"].includes(n))) scale = "endless";
 
-  // ── Density (new Iter 16) ──────────────────────────────────────────
+  // ── Density (Iter 16 + 19A crowd hint) ──────────────────────────────
   let density: DensityPreset = "balanced";
-  if (all.some((n) => ["endless", "infinite", "vast", "dense"].includes(n))) density = "dense";
+  // 19A: Crowd hint from text phrases takes priority
+  if (crowdHint === "crowded") density = "dense";
+  else if (crowdHint === "empty") density = "sparse";
+  else if (all.some((n) => ["endless", "infinite", "vast", "dense"].includes(n))) density = "dense";
   else if (all.some((n) => ["tiny", "small", "quiet"].includes(n))) density = "sparse";
   else if (scale === "endless") density = "endless";
   else if (scale === "giant") density = "dense";
@@ -867,248 +980,114 @@ function buildDreamProfile(
   return { palette, layout, tone, coherence, richness, keywords };
 }
 
-// ── 15E: Enhanced structured grammar-based random dream generator ────
+// ── 22: Curated high-quality dream list ──────────────────────────────
 
-const G_PLACES = [
-  "ocean", "city", "forest", "ruins", "mountains", "desert", "castle",
-  "clouds", "cave", "garden", "temple", "village", "palace", "lake",
-  "island", "valley", "jungle", "cliff", "void", "realm", "canyon",
-  "river", "sea", "field", "sky", "glacier", "tundra", "volcano",
-  "marsh", "dungeon", "crypt", "arena", "library", "harbor", "plaza",
-  "reef", "oasis", "dreamscape", "beach", "labyrinth", "abyss",
-  "cathedral", "colosseum", "fortress", "grotto", "mesa", "savanna"
-];
-const G_DESCRIPTORS = [
-  "glowing", "floating", "ancient", "giant", "broken", "golden",
-  "silver", "glass", "dark", "bright", "frozen", "burning",
-  "endless", "magical", "ethereal", "hidden", "massive", "sacred",
-  "misty", "luminous", "neon", "surreal", "cosmic", "spectral",
-  "enchanted", "shadowy", "lost", "vast", "deep", "tall",
-  "tiny", "crimson", "emerald", "azure", "ivory", "copper",
-  "twisted", "shattered", "hollow", "submerged", "overgrown",
-  "petrified", "forgotten", "haunted", "whispering", "pulsing",
-  "inverted", "mirrored", "ornate", "cursed", "kaleidoscopic",
-  "melting", "shimmering", "dusty", "mechanical", "marble",
-  "crystalline", "volcanic", "mossy", "gilded", "skeletal",
-  "radiant", "translucent", "weathered", "rusted", "prismatic"
-];
-const G_OBJECTS = [
-  "tower", "ruins", "bridge", "crystals", "statue", "gate",
-  "pillars", "stones", "tree", "monument", "orb", "throne",
-  "fragments", "spires", "walls", "columns", "lanterns",
-  "mirror", "stairs", "fountain", "lighthouse", "pyramid",
-  "dome", "arch", "skull", "bell", "cage", "campfire",
-  "windmill", "vine", "mushroom", "steeple", "obelisk",
-  "altar", "well", "beacon", "clock", "anvil", "harp"
-];
-const G_OBJECTS_PLURAL = [
-  "towers", "bridges", "pillars", "fragments", "statues", "monuments",
-  "gates", "columns", "lanterns", "crystals", "stones", "spires",
-  "arches", "walls", "domes", "pyramids", "bells", "cages",
-  "obelisks", "altars", "wells", "beacons", "mirrors", "thrones"
-];
-const G_SCALES = [
-  "giant", "massive", "tiny", "endless", "colossal", "towering",
-  "miniature", "vast", "sprawling", "immense", "hidden"
-];
-const G_MOODS = [
-  "serene", "ominous", "mystical", "haunting", "tranquil",
-  "eerie", "sacred", "solemn", "dreamlike", "forbidden",
-  "forgotten", "cursed", "ancient", "ethereal", "melancholic"
-];
-const G_ENV_FEATURES = [
-  "floating islands", "crystal formations", "ancient roots",
-  "glowing fungi", "frozen waterfalls", "lava streams",
-  "vine bridges", "cloud platforms", "coral growths",
-  "stone arches", "mirror pools", "shadow corridors",
-  "sand dunes", "ice pillars", "mushroom groves",
-  "rusted machinery", "glass spires", "bone altars"
-];
-const G_WEATHER = [
-  "rain", "storm", "snow", "fog", "wind", "aurora"
-];
-const G_TIMES = [
-  "at night", "at dawn", "at dusk", "at sunset", "at midnight",
-  "under moonlight", "under starlight", "during twilight"
-];
-const G_MATERIALS = [
-  "crystal", "golden", "silver", "marble", "obsidian",
-  "glass", "copper", "ivory", "wooden", "iron", "jade"
-];
-const G_SURREAL = [
-  "where gravity is reversed", "that shifts when you look away",
-  "reflected in an endless mirror", "growing from nothing",
-  "pulsing with inner light", "dissolving into mist",
-  "stretching beyond the horizon", "half-submerged in water",
-  "crumbling into the sky", "surrounded by floating debris",
-  "whispering forgotten names", "where time moves differently",
-  "shrouded in purple light", "bleeding color into the void",
-  "folding in on itself", "that exists between dreams",
-  "drifting between worlds", "suspended in amber light"
-];
-const G_SURREAL_MODIFIERS = [
-  "inverted", "drifting", "suspended", "whispering", "mirrored",
-  "melting", "kaleidoscopic", "pulsing", "shimmering", "twisted",
-  "folding", "unraveling", "spiraling", "echoing", "fracturing"
-];
-const G_ATMOSPHERE = [
-  "storm", "rain", "sunset", "twilight", "moonlight", "fog",
-  "aurora", "thunder", "snow", "wind", "starfall", "eclipse"
-];
+const CURATED_DREAMS: string[] = [
+  // ── Featured — strong presence (reliable fallbacks) ──────────────
+  "I'm at a rocky coast with a lighthouse and stone stairs, and a storm is forming with strong winds and dark clouds",
+  "I'm near a river with a bridge and trees while sunlight reflects off the water",
+  "A tropical island with warm lighthouse and driftwood surrounded by sea caves under starlight",
+  "I'm in a garden with fountains and lanterns while petals fall under a night sky",
+  "I'm standing on a cliff at the edge of the sea while a storm rolls in and waves crash against the rocks below",
+  "I'm in a stone courtyard with a tall gate and ivy-covered walls while a cold wind blows through at dusk",
+  "I'm at a wooden dock on a foggy lake at dawn with rowboats tied along the pier and trees rising behind them",
+  "I'm inside a cathedral with high arched ceilings and long windows while rain streams down the glass outside",
+  "I'm standing in a field of tall grass with a farmhouse and windmill while thunderclouds gather at the horizon",
+  "I'm on a cobblestone road through a quiet village with stone fences and open doors while snow falls silently",
+  "I'm at the mouth of a sea cave with tidal pools and barnacled rocks while waves push in with each gust",
+  "I'm crossing a rope bridge over a canyon while mist rises from the river far below and wind sways the planks",
+  "I'm beside a waterfall that drops into a still pool surrounded by mossy boulders while ferns drip with rain",
+  "I'm standing on a hilltop with a ruined watchtower while the sun sets behind distant mountains and the ground is dry",
 
-// ── 15E: New grammar slots for richer dreams ─────────────────────────
-const G_INHABITANTS = [
-  "ghosts", "spirits", "shadows", "echoes", "memories",
-  "wanderers", "guardians", "sentinels", "wraiths", "pilgrims"
-];
-const G_ACTIONS = [
-  "singing forgotten songs", "drifting between worlds",
-  "dissolving into light", "rebuilding endlessly", "sleeping eternally",
-  "guarding a secret", "waiting for dawn", "searching for something lost",
-  "whispering to the wind", "fading in and out of existence"
-];
-const G_SPATIAL_RELATIONS = [
-  "above", "beside", "beneath", "surrounding", "inside",
-  "beyond", "across from", "at the edge of"
-];
+  // Beach / Ocean
+  "I'm on a warm beach with a tall lighthouse, wooden docks, and turtles walking along the shore while the sky turns orange at sunset",
+  "I'm standing on a tropical island with palm trees and a small village, and it's lightly raining while waves crash against nearby cliffs",
+  "I'm walking along a quiet shoreline with a broken pier and scattered boats, and there's fog rolling in from the ocean at dawn",
+  "I'm exploring a beach with coral structures and wooden huts, and the tide is glowing under a starry night sky",
+  "I'm near a harbor with ships and cranes, and it's raining while lanterns reflect across the water",
+  "I'm on a small island with cliffs and a watchtower, and waves are crashing below during a windy sunset",
+  "I'm walking through a coastal village with wooden houses and bridges while mist drifts through the air",
+  "I'm standing by a quiet bay with docks and anchored ships, and everything is calm with light fog in the morning",
+  "I'm on a beach with caves carved into cliffs, and rain is falling while waves echo inside the caves",
 
-// ── 15E: Template patterns (5-7 semantic slots per dream) ─────────────
-interface DreamTemplate {
-  weight: number;
-  build: (pick: <T>(arr: T[]) => T, maybe: (p: number) => boolean) => string;
-}
+  // City
+  "I'm walking through a neon city with tall buildings and bridges, and it's raining while lights reflect off the streets at night",
+  "I'm standing on a rooftop in a city above the clouds, and everything is covered in mist with soft light coming through",
+  "I'm walking through a busy harbor city with docks and a lighthouse while the sky turns orange at sunset",
+  "I'm in a futuristic city with glass towers and floating structures while rain falls and everything glows",
+  "I'm in a quiet stone city with empty streets and arches while fog slowly moves through the buildings",
+  "I'm walking through a city plaza with a fountain and statues while it's lightly snowing",
+  "I'm in a tall vertical city with stacked platforms and bridges while clouds move between the buildings",
+  "I'm exploring a ruined city with broken towers and vines while thunder echoes in the distance",
+  "I'm walking down a street filled with lanterns and shops while rain falls steadily at night",
 
-const DREAM_TEMPLATES: DreamTemplate[] = [
-  // Pattern 1: [scale] [descriptor] [place] [relation] [place] + [atmosphere] + [objects] + [features]
-  { weight: 3, build: (pick, maybe) => {
-    let s = `A ${pick(G_SCALES)} ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
-    s += ` ${pick(G_SPATIAL_RELATIONS)} a ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
-    s += ` during a ${pick(G_ATMOSPHERE)}`;
-    if (maybe(0.7)) s += ` with ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS_PLURAL)}`;
-    if (maybe(0.5)) s += ` and ${pick(G_ENV_FEATURES)}`;
-    if (maybe(0.3)) s += ` where ${pick(G_INHABITANTS)} are ${pick(G_ACTIONS).split(" ").slice(0, 2).join(" ")}`;
-    return s;
-  }},
-  // Pattern 2: [descriptor] [place] above [descriptor] [place] + [objects] + [time]
-  { weight: 3, build: (pick, maybe) => {
-    let s = `A ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)} above a ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
-    s += ` with ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS_PLURAL)}`;
-    if (maybe(0.6)) s += ` and ${pick(G_SURREAL_MODIFIERS)} ${pick(G_OBJECTS)}`;
-    s += ` ${pick(G_TIMES)}`;
-    if (maybe(0.4)) s += ` ${pick(G_SURREAL)}`;
-    return s;
-  }},
-  // Pattern 3: [mood] [environment] + [material landmark] + [objects] + [weather] + [surreal]
-  { weight: 3, build: (pick, maybe) => {
-    let s = `A ${pick(G_MOODS)} ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
-    s += ` with a ${pick(G_MATERIALS)} ${pick(G_OBJECTS)}`;
-    s += ` and ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS_PLURAL)}`;
-    if (maybe(0.7)) s += ` during ${pick(G_ATMOSPHERE)}`;
-    if (maybe(0.5)) s += ` surrounded by ${pick(G_ENV_FEATURES)}`;
-    if (maybe(0.3)) s += ` ${pick(G_SURREAL)}`;
-    return s;
-  }},
-  // Pattern 4: layered — objects in [environment] [relation] [environment] + features
-  { weight: 2, build: (pick, maybe) => {
-    let s = `${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS_PLURAL)} and a ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS)}`;
-    s += ` in a ${pick(G_SCALES)} ${pick(G_PLACES)}`;
-    s += ` beside a ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
-    if (maybe(0.6)) s += ` with ${pick(G_ENV_FEATURES)}`;
-    if (maybe(0.5)) s += ` ${pick(G_TIMES)}`;
-    if (maybe(0.4)) s += ` ${pick(G_SURREAL)}`;
-    return s;
-  }},
-  // Pattern 5: surreal place + material objects + inhabitants + weather
-  { weight: 2, build: (pick, maybe) => {
-    let s = `A ${pick(G_SURREAL_MODIFIERS)} ${pick(G_PLACES)} with ${pick(G_MATERIALS)} ${pick(G_OBJECTS_PLURAL)}`;
-    s += ` and ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS)}`;
-    if (maybe(0.6)) s += ` surrounded by ${pick(G_ENV_FEATURES)}`;
-    s += ` ${pick(G_TIMES)}`;
-    if (maybe(0.5)) s += ` where ${pick(G_INHABITANTS)} are ${pick(G_ACTIONS).split(" ").slice(0, 2).join(" ")}`;
-    return s;
-  }},
-  // Pattern 6: two connected places with spatially-defined relationship
-  { weight: 2, build: (pick, maybe) => {
-    let s = `A ${pick(G_SCALES)} ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
-    s += ` ${pick(G_SPATIAL_RELATIONS)} a ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
-    s += ` with ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS_PLURAL)}`;
-    if (maybe(0.5)) s += ` and a ${pick(G_MATERIALS)} ${pick(G_OBJECTS)}`;
-    if (maybe(0.5)) s += ` during ${pick(G_ATMOSPHERE)}`;
-    if (maybe(0.3)) s += ` ${pick(G_SURREAL)}`;
-    return s;
-  }},
-  // Pattern 7: environment filled with objects + atmosphere + surreal
-  { weight: 2, build: (pick, maybe) => {
-    let s = `A ${pick(G_MOODS)} ${pick(G_PLACES)} filled with ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS_PLURAL)}`;
-    s += ` and ${pick(G_MATERIALS)} ${pick(G_OBJECTS)}`;
-    s += ` under a ${pick(G_DESCRIPTORS)} sky`;
-    if (maybe(0.6)) s += ` during ${pick(G_ATMOSPHERE)}`;
-    if (maybe(0.4)) s += ` ${pick(G_SURREAL)}`;
-    return s;
-  }},
-  // Pattern 8: epic scene — 6-7 parts
-  { weight: 2, build: (pick, maybe) => {
-    let s = `A ${pick(G_SCALES)} ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
-    s += ` above a ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
-    s += ` with ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS_PLURAL)}`;
-    s += ` and a ${pick(G_MATERIALS)} ${pick(G_OBJECTS)}`;
-    s += ` during a ${pick(G_ATMOSPHERE)} ${pick(G_TIMES).replace("at ", "")}`;
-    if (maybe(0.5)) s += ` surrounded by ${pick(G_ENV_FEATURES)}`;
-    if (maybe(0.4)) s += ` ${pick(G_SURREAL)}`;
-    return s;
-  }},
-  // Pattern 9: surreal-heavy dream with inhabitants
-  { weight: 1, build: (pick, maybe) => {
-    let s = `A ${pick(G_SURREAL_MODIFIERS)} ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
-    s += ` with ${pick(G_SURREAL_MODIFIERS)} ${pick(G_OBJECTS_PLURAL)}`;
-    s += ` beside ${pick(G_ENV_FEATURES)}`;
-    s += ` ${pick(G_SURREAL)}`;
-    if (maybe(0.5)) s += ` where ${pick(G_INHABITANTS)} are ${pick(G_ACTIONS).split(" ").slice(0, 3).join(" ")}`;
-    return s;
-  }},
-  // Pattern 10: structure inside place + objects + env features + time
-  { weight: 1, build: (pick, maybe) => {
-    let s = `A ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS)} inside a ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
-    s += ` with ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS_PLURAL)}`;
-    if (maybe(0.7)) s += ` and ${pick(G_ENV_FEATURES)}`;
-    if (maybe(0.5)) s += ` ${pick(G_TIMES)}`;
-    if (maybe(0.4)) s += ` during ${pick(G_ATMOSPHERE)}`;
-    return s;
-  }},
-  // Pattern 11 (15E): inhabited environment — place with creatures + mood + features
-  { weight: 2, build: (pick, maybe) => {
-    let s = `A ${pick(G_MOODS)} ${pick(G_PLACES)} inhabited by ${pick(G_INHABITANTS)}`;
-    s += ` ${pick(G_ACTIONS)}`;
-    s += ` with ${pick(G_DESCRIPTORS)} ${pick(G_OBJECTS_PLURAL)}`;
-    if (maybe(0.6)) s += ` and ${pick(G_ENV_FEATURES)}`;
-    if (maybe(0.5)) s += ` ${pick(G_TIMES)}`;
-    return s;
-  }},
-  // Pattern 12 (15E): material-rich scene — multiple materials + structure + environment
-  { weight: 1, build: (pick, maybe) => {
-    let s = `A ${pick(G_MATERIALS)} ${pick(G_OBJECTS)} and ${pick(G_MATERIALS)} ${pick(G_OBJECTS_PLURAL)}`;
-    s += ` in a ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
-    s += ` ${pick(G_SPATIAL_RELATIONS)} a ${pick(G_DESCRIPTORS)} ${pick(G_PLACES)}`;
-    if (maybe(0.6)) s += ` during ${pick(G_ATMOSPHERE)}`;
-    if (maybe(0.5)) s += ` ${pick(G_SURREAL)}`;
-    return s;
-  }},
+  // Forest
+  "I'm walking through a dense forest with tall trees and ruins while mist floats between everything",
+  "I'm in an ancient forest with glowing mushrooms and stone structures while soft light shines through the trees",
+  "I'm walking through a snowy forest with animals and frozen ruins while snow falls slowly",
+  "I'm in a jungle with vine bridges and hidden temples while rain pours down heavily",
+  "I'm standing in a quiet forest clearing with a stone altar while fireflies glow around me at night",
+  "I'm walking through a foggy forest with twisted trees and roots while everything feels still",
+  "I'm in a glowing forest with strange plants and soft light while the air feels surreal",
+  "I'm exploring a forest with a river and stone bridge while leaves fall during sunset",
+  "I'm in a dark forest with barely any light while distant sounds echo through the trees",
+  "I'm walking through a peaceful woodland with a stream and flowers while the sky is bright and calm",
+
+  // Mountain / Cave / Temple
+  "I'm standing on a snowy mountain with a temple at the top while snow falls and wind moves through the area",
+  "I'm inside a cave with glowing crystals and stone pillars while water drips from above",
+  "I'm in a massive marble temple with tall columns and a throne while everything is lit by torches",
+  "I'm exploring a cave system with tunnels and glowing walls while fog hangs in the air",
+  "I'm at a mountain shrine with stone steps and flags while snow gently falls around me",
+  "I'm inside a cavern with large crystal formations while beams of light shine through cracks above",
+  "I'm exploring an ancient temple with broken pillars while rain falls through the open ceiling",
+  "I'm inside a deep cave with echoes and glowing stones while everything feels quiet",
+
+  // Surreal / Mixed
+  "I'm in a floating city with inverted towers and bridges while clouds move all around me",
+  "I'm in a strange world with floating staircases and structures while everything glows softly",
+  "I'm walking through a surreal landscape with warped buildings while light bends in unusual ways",
+  "I'm in a fragmented world with pieces of land floating while energy flows between them",
+  "I'm in a dreamlike void with platforms and towers while everything slowly drifts",
+  "I'm in a mirrored environment with reflections everywhere while light moves across surfaces",
+  "I'm walking through a distorted city with curved buildings while rain falls sideways",
+  "I'm exploring a world with broken geometry while objects hover in the air",
+  "I'm in a surreal ocean where waves are frozen in place while light shines through them",
+
+  // Mixed / Peaceful
+  "I'm in a meadow with flowers and a small house while the sun sets and everything feels calm",
+  "I'm standing near a lake with statues and trees while fog slowly moves across the water",
+  "I'm in a garden with fountains and lanterns while petals fall under a night sky",
+  "I'm in a quiet village with stone paths and houses while light rain falls",
+  "I'm exploring a field with ruins and scattered structures while clouds move overhead",
+  "I'm standing in an open field with distant mountains while wind moves through the grass",
+  "I'm walking through a calm environment with structures and nature while everything feels quiet",
+
+  // Additional entries for variety
+  "I'm on a cliff above a stormy sea with a broken lighthouse while lightning strikes in the distance",
+  "I'm in a frozen tundra with ice pillars and a distant fortress while aurora lights fill the sky",
+  "I'm standing at the edge of a desert oasis with palm trees and a stone well while stars appear above",
+  "I'm in a ruined cathedral with shattered stained glass and vines while moonlight pours through the ceiling",
+  "I'm on a mountain trail with ancient stone markers while snow falls softly and mist fills the valley",
+  "I'm inside a library tower with spiral stairs and floating books while rain taps against tall windows",
+  "I'm at a harbor at dawn with fishing boats, wooden docks, and seagulls while mist clings to the water",
+  "I'm in a sunken temple visible through clear shallow water while sunlight bends through the surface",
+  "I'm walking through a bamboo forest with a stone path and a small shrine while rain drips from the leaves",
+  "I'm on a volcanic island with black sand beaches and a glowing crater while the sea shimmers at night",
+  "I'm in a canyon with towering red walls and a river below while eagles circle overhead in the morning light",
+  "I'm standing in a courtyard of a palace with marble fountains and arched walkways while petals drift in the breeze",
+  "I'm at the base of a waterfall in a jungle clearing with mossy rocks and a rope bridge while mist rises",
+  "I'm in a mountain monastery with wooden bridges and prayer flags while clouds drift through the courtyard",
+  "I'm on a glacier with blue ice crevasses and distant peaks while the sky glows pink at dusk",
+  "I'm walking along a canal in a flooded city with gondolas and lanterns while fog hangs low at night",
+  "I'm exploring a mesa at sunrise with sandstone arches and desert scrub while the sky turns red to gold",
+  "I'm in a forest of giant mushrooms and bioluminescent plants beside a glowing pond while everything is still at night",
 ];
 
-export function generateRandomDream(): string {
-  const pick = <T>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
-  const maybe = (p: number): boolean => Math.random() < p;
-
-  // Weighted template selection
-  const totalWeight = DREAM_TEMPLATES.reduce((sum, t) => sum + t.weight, 0);
-  let r = Math.random() * totalWeight;
-  let template = DREAM_TEMPLATES[0];
-  for (const t of DREAM_TEMPLATES) {
-    r -= t.weight;
-    if (r <= 0) { template = t; break; }
-  }
-
-  return template.build(pick, maybe);
+export function getRandomDream(): string {
+  const dream = CURATED_DREAMS[Math.floor(Math.random() * CURATED_DREAMS.length)];
+  console.debug("[DTWE] Selected dream:", dream);
+  return dream;
 }
 
 // ── Coverage test samples (used by debug mode) ───────────────────────

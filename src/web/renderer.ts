@@ -1,6 +1,6 @@
 // @ts-expect-error - CDN ESM import is resolved by the browser at runtime.
 import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
-import type { WorldModel, WorldEntity, SemanticTags, ScaleType, EntityType, EnvironmentType, EnvironmentArchetype, LandmarkRole, DreamProfile, ColorPalette } from "../core/transform.js";
+import type { WorldModel, WorldEntity, SemanticTags, ScaleType, EntityType, EnvironmentType, EnvironmentArchetype, LandmarkRole, DreamProfile, ColorPalette, SceneType } from "../core/transform.js";
 import { resolveSurfaceProfile } from "./surface.js";
 import type { SurfaceProfile } from "./surface.js";
 import { accumulateFootstep, resetFootstepAccumulator, setFootstepSurface, playInteractionSound, playLaserFireSound, playLaserHitSound, playDestructionSound, playShockwaveSound, playTelekinesisGrabSound, playTelekinesisThrowSound, startLaserLoop, stopLaserLoop, playBellTollSound, playThunderSound, playDustBurstSound } from "./audio.js";
@@ -66,6 +66,7 @@ type CameraMode = "first" | "third";
 let cameraMode: CameraMode = "first";
 let playerPos = new THREE.Vector3(0, 0, 0); // feet position
 let playerSpawnPos = new THREE.Vector3(0, 0, 0); // 16G: saved spawn for reset
+let primaryLandmarkWorldPos: THREE.Vector3 | null = null; // 18: used by cinematic look target
 let fpArms: THREE.Group | null = null;
 let tpAvatar: THREE.Group | null = null;
 const TP_OFFSET = new THREE.Vector3(0, 3, 7); // behind + above
@@ -96,10 +97,10 @@ const SCALE = {
   /** Dream zone */            dreamR: 12,
   /** Platform fallback */     platSize: 10,
   /** Generic box */           boxH: 2.4, boxW: 1.6,
-  /** Ring radius */           ringRadius: { min: 18, max: 35 },
-  /** Min spacing */           minSpacing: 8,
-  /** Object orbit */          objectOrbit: { min: 6, max: 14 },
-  /** Tower orbit */           towerOrbit: { min: 8, max: 16 },
+  /** Ring radius */           ringRadius: { min: 10, max: 22 },
+  /** Min spacing */           minSpacing: 5,
+  /** Object orbit */          objectOrbit: { min: 4, max: 10 },
+  /** Tower orbit */           towerOrbit: { min: 6, max: 12 },
 };
 let worldSeed = "";
 let hasOcean = false;
@@ -147,9 +148,10 @@ function getTerrainNoiseY(x: number, z: number): number {
   h += (smoothNoise(x * 0.1, z * 0.1, terrainSeed + 200) - 0.5) * 2 * terrainAmplitude * 0.15;
 
   // Edge gradient: terrain is flatter near center, more varied at edges
+  // 18F: Wider flat center zone for clear spawn area
   const distFromCenter = Math.sqrt(x * x + z * z);
-  const edgeFactor = Math.min(distFromCenter / 60, 1); // ramps up from 0 to 1 over 60 units
-  const centerFlatten = 0.2 + edgeFactor * 0.8; // center = 20% height, edge = 100%
+  const edgeFactor = Math.min(distFromCenter / 70, 1); // ramps up from 0 to 1 over 70 units
+  const centerFlatten = 0.1 + edgeFactor * 0.9; // center = 10% height, edge = 100%
   h *= centerFlatten;
 
   // Flatten near landmarks and spawn
@@ -179,6 +181,7 @@ interface Chunk {
 const loadedChunks = new Map<string, Chunk>();
 let activeSemantics: SemanticTags | null = null;
 let activeArchetype: EnvironmentArchetype | null = null;
+let activeSceneType: SceneType = "generic";
 let streamingEnabled = false;
 let lastPlayerChunkX = 0;
 let lastPlayerChunkZ = 0;
@@ -191,6 +194,13 @@ let weatherRain: THREE.Points | null = null;
 let weatherSnow: THREE.Points | null = null;
 let thunderActive = false;
 let thunderTimer = 0;
+// 20B: Rain splash rings on ground
+let rainSplashes: { mesh: THREE.Mesh; timer: number }[] = [];
+const RAIN_SPLASH_MAX = 20;
+const rainSplashGeo = new THREE.RingGeometry(0.05, 0.25, 8);
+const rainSplashMat = new THREE.MeshBasicMaterial({
+  color: 0x88aacc, transparent: true, opacity: 0.45, side: THREE.DoubleSide, depthWrite: false
+});
 // 16F: Enhanced weather state
 let fogWaveTimer = 0;
 let fogBaseFar = 300;
@@ -402,6 +412,7 @@ function disposePhysics(): void {
 
 // ── Gameplay state ───────────────────────────────────────────────────
 const discoveredLandmarks = new Set<string>();
+let discoveryGraceFrames = 0; // frames to wait before proximity discovery fires
 
 // ── UI element refs (set at init) ────────────────────────────────────
 let interactionHint: HTMLElement | null = null;
@@ -629,6 +640,7 @@ export function renderWorld(world: WorldModel): void {
   // Store semantics for streaming & scale
   activeSemantics = world.semantics;
   activeArchetype = world.archetype;
+  activeSceneType = world.sceneType ?? "generic";
   activeScaleMultiplier = scaleMultiplierForSemantics(world.semantics.scale);
   streamingEnabled = true;
   loadedChunks.clear();
@@ -656,7 +668,7 @@ export function renderWorld(world: WorldModel): void {
   scene.add(worldGroup);
 
   const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(400, 400, 128, 128),
+    new THREE.PlaneGeometry(260, 260, 80, 80),
     new THREE.MeshStandardMaterial({
       color: currentSurfaceProfile.groundColor,
       roughness: currentSurfaceProfile.groundRoughness,
@@ -682,6 +694,12 @@ export function renderWorld(world: WorldModel): void {
   } else {
     terrainAmplitude = 2.0;
   }
+  // 19H/20B: Arena/temple scenes get flat floors (interior removed)
+  if (activeSceneType === "arena") {
+    terrainAmplitude = 0;
+  } else if (activeSceneType === "temple") {
+    terrainAmplitude = 0.3;
+  }
   terrainFlattenPoints.length = 0;
   {
     const posAttr = ground.geometry.attributes.position as THREE.BufferAttribute;
@@ -697,6 +715,52 @@ export function renderWorld(world: WorldModel): void {
   }
 
   worldGroup.add(ground);
+
+  // ── 18B/19B/20B: Scene-specific enclosure geometry (cave + temple only) ──
+  if (activeSceneType === "cave" || activeSceneType === "temple") {
+    const ceilH = activeSceneType === "cave" ? 18 : 14;
+    const ceilSize = activeSceneType === "cave" ? 100 : 65;
+    const ceilColor = activeSceneType === "cave" ? 0x2a2a2e : 0x6a6a64;
+    const ceilMat = new THREE.MeshStandardMaterial({
+      color: ceilColor, roughness: 0.9, metalness: 0.02, side: THREE.DoubleSide
+    });
+    const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(ceilSize, ceilSize, 1, 1), ceilMat);
+    ceiling.rotation.x = Math.PI / 2;
+    ceiling.position.y = ceilH;
+    ceiling.receiveShadow = true;
+    worldGroup.add(ceiling);
+
+    // 18B: Stalactites for cave ceilings
+    if (activeSceneType === "cave") {
+      const stalMat = new THREE.MeshStandardMaterial({ color: 0x3a3a3e, roughness: 0.9 });
+      for (let si = 0; si < 25; si++) {
+        const h = 1 + rng() * 4;
+        const r = 0.2 + rng() * 0.5;
+        const stal = new THREE.Mesh(new THREE.ConeGeometry(r, h, 5), stalMat);
+        stal.rotation.x = Math.PI; // hang from ceiling
+        const dist = rng() * 40;
+        const angle = rng() * Math.PI * 2;
+        stal.position.set(Math.cos(angle) * dist, ceilH - h / 2, Math.sin(angle) * dist);
+        worldGroup.add(stal);
+      }
+    }
+
+    // 18B: Arched pillars for temples
+    if (activeSceneType === "temple") {
+      const pillarMat = new THREE.MeshStandardMaterial({ color: 0x7a7a74, roughness: 0.6, metalness: 0.1 });
+      const pillarCount = 8;
+      const pillarRadius = 22;
+      for (let pi = 0; pi < pillarCount; pi++) {
+        const angle = (pi / pillarCount) * Math.PI * 2;
+        const pH = ceilH - 0.5;
+        const pR = 0.6;
+        const pillar = new THREE.Mesh(new THREE.CylinderGeometry(pR * 0.75, pR, pH, 8), pillarMat);
+        pillar.position.set(Math.cos(angle) * pillarRadius, pH / 2, Math.sin(angle) * pillarRadius);
+        pillar.castShadow = true;
+        worldGroup.add(pillar);
+      }
+    }
+  }
 
   const groupById: GroupMap = new Map();
   const entityById = new Map<string, WorldEntity>();
@@ -768,6 +832,22 @@ export function renderWorld(world: WorldModel): void {
     (entity) => entity.type === "place" && entity.id !== anchor?.id
   );
 
+  // ── 17D: Scene-aware layout bias ──────────────────────────────────
+  // Adjust placement radii and offset based on scene type
+  const layoutCompact = ((): number => {
+    switch (activeSceneType) {
+      case "cave": return 0.55;
+      case "temple": return 0.65;
+      case "arena": return 0.65;
+      case "city": return 0.8;       // 20B: cities need more spread
+      case "beach": return 0.85;
+      default: return 1.0;
+    }
+  })();
+  // Beach: push objects toward positive-Z (away from water at negative-Z)
+  const layoutBiasX = activeSceneType === "beach" ? 0 : 0;
+  const layoutBiasZ = activeSceneType === "beach" ? 4 : 0;
+
   // ── 14C: Zone-based placement ─────────────────────────────────────
   // Secondary landmarks → mid zone (20-50 units)
   // Background places → outer zone (50-80 units)
@@ -782,11 +862,11 @@ export function renderWorld(world: WorldModel): void {
   const secStep = secondaryEntities.length > 0 ? (Math.PI * 2) / secondaryEntities.length : 0;
   secondaryEntities.forEach((entity, index) => {
     const angle = secStep * index + (rng() - 0.5) * 0.4;
-    const radius = 14 + rng() * 18;
+    const radius = (8 + rng() * 10) * layoutCompact;
     const pos = new THREE.Vector3(
-      Math.cos(angle) * radius,
+      Math.cos(angle) * radius + layoutBiasX,
       baseYForEntity(entity),
-      Math.sin(angle) * radius
+      Math.sin(angle) * radius + layoutBiasZ
     );
     placeEntity(entity, pos);
     // 16A-D: Flatten terrain around secondary landmarks
@@ -797,25 +877,25 @@ export function renderWorld(world: WorldModel): void {
   const bgStep = backgroundEntities.length > 0 ? (Math.PI * 2) / backgroundEntities.length : 0;
   backgroundEntities.forEach((entity, index) => {
     const angle = bgStep * index + (rng() - 0.5) * 0.5 + 0.3;
-    const radius = 35 + rng() * 20;
+    const radius = (18 + rng() * 12) * layoutCompact;
     const pos = new THREE.Vector3(
-      Math.cos(angle) * radius,
+      Math.cos(angle) * radius + layoutBiasX,
       baseYForEntity(entity),
-      Math.sin(angle) * radius
+      Math.sin(angle) * radius + layoutBiasZ
     );
     placeEntity(entity, pos);
   });
 
   // Remaining places fill the ring
-  const ringRadius = SCALE.ringRadius.min + rng() * (SCALE.ringRadius.max - SCALE.ringRadius.min);
+  const ringRadius = (SCALE.ringRadius.min + rng() * (SCALE.ringRadius.max - SCALE.ringRadius.min)) * layoutCompact;
   const step = otherNonRoled.length > 0 ? (Math.PI * 2) / otherNonRoled.length : 0;
   otherNonRoled.forEach((entity, index) => {
     const angle = step * index + (rng() - 0.5) * 0.4;
     const radius = ringRadius + (rng() - 0.5) * 2;
     const pos = new THREE.Vector3(
-      Math.cos(angle) * radius,
+      Math.cos(angle) * radius + layoutBiasX,
       baseYForEntity(entity),
-      Math.sin(angle) * radius
+      Math.sin(angle) * radius + layoutBiasZ
     );
     placeEntity(entity, pos);
   });
@@ -833,13 +913,13 @@ export function renderWorld(world: WorldModel): void {
     const origin = base ?? anchorPos ?? new THREE.Vector3();
 
     const angle = rng() * Math.PI * 2;
-    const radius = entity.type === "object"
+    const radius = (entity.type === "object"
       ? SCALE.objectOrbit.min + rng() * (SCALE.objectOrbit.max - SCALE.objectOrbit.min)
-      : SCALE.ringRadius.min * 0.5 + rng() * 10;
+      : SCALE.ringRadius.min * 0.5 + rng() * 10) * layoutCompact;
     const pos = new THREE.Vector3(
-      origin.x + Math.cos(angle) * radius,
+      origin.x + Math.cos(angle) * radius + layoutBiasX,
       baseYForEntity(entity),
-      origin.z + Math.sin(angle) * radius
+      origin.z + Math.sin(angle) * radius + layoutBiasZ
     );
     placeEntity(entity, pos);
   });
@@ -922,6 +1002,56 @@ export function renderWorld(world: WorldModel): void {
   setupFloatingGroups(groupById);
   collectNaturalMotion();
 
+  // ── 20B: Placement validation — clamp stray objects inside supported ground ──
+  {
+    const groundHalfSize = 125; // ground plane is 260×260 → ±130, keep margin of 5
+    placedPositions.forEach((pos) => {
+      pos.x = Math.max(-groundHalfSize, Math.min(groundHalfSize, pos.x));
+      pos.z = Math.max(-groundHalfSize, Math.min(groundHalfSize, pos.z));
+    });
+    // Also clamp any group that drifted out
+    groupById.forEach((group) => {
+      if (Math.abs(group.position.x) > groundHalfSize) {
+        group.position.x = Math.sign(group.position.x) * groundHalfSize;
+      }
+      if (Math.abs(group.position.z) > groundHalfSize) {
+        group.position.z = Math.sign(group.position.z) * groundHalfSize;
+      }
+    });
+  }
+
+  // ── 20B: Ground skirt — extended flat ring to cover void at scene edges ──
+  if (worldGroup) {
+    const contentBounds = new THREE.Box3();
+    worldGroup.children.forEach((child: THREE.Object3D) => {
+      if (child === ground) return; // skip ground plane itself
+      const cb = new THREE.Box3().setFromObject(child);
+      if (!cb.isEmpty()) contentBounds.expandByPoint(cb.min).expandByPoint(cb.max);
+    });
+    const contentRadius = Math.max(
+      Math.abs(contentBounds.min.x), Math.abs(contentBounds.max.x),
+      Math.abs(contentBounds.min.z), Math.abs(contentBounds.max.z),
+      80 // minimum skirt
+    );
+    const skirtSize = Math.max(contentRadius * 2.4, 320);
+    const existingSize = 260;
+    if (skirtSize > existingSize + 20) {
+      const skirtMat = new THREE.MeshStandardMaterial({
+        color: currentSurfaceProfile.groundColor,
+        roughness: currentSurfaceProfile.groundRoughness + 0.05,
+        metalness: 0.01, side: THREE.DoubleSide
+      });
+      const skirt = new THREE.Mesh(
+        new THREE.PlaneGeometry(skirtSize, skirtSize, 1, 1),
+        skirtMat
+      );
+      skirt.rotation.x = -Math.PI / 2;
+      skirt.position.y = -0.05; // slightly below main terrain to avoid z-fight
+      skirt.receiveShadow = true;
+      worldGroup.add(skirt);
+    }
+  }
+
   const worldBounds = new THREE.Box3().setFromObject(worldGroup);
   if (worldBounds.isEmpty()) return;
   const center = worldBounds.getCenter(new THREE.Vector3());
@@ -930,12 +1060,23 @@ export function renderWorld(world: WorldModel): void {
   // ── 15A: Track ground-plane world-space Y after centering ──────────
   groundBaseY = worldGroup.position.y;
 
-  // Tune fog to scene scale
+  // Tune fog to scene scale + scene type (18G)
   const size = new THREE.Box3().setFromObject(worldGroup).getSize(new THREE.Vector3());
   const sceneRadius = Math.max(size.x, size.z) * 0.5;
   if (scene && scene.fog instanceof THREE.Fog) {
-    scene.fog.near = Math.max(sceneRadius * 0.4, 30);
-    scene.fog.far = Math.min(Math.max(sceneRadius * 3.5, 200), 1000);
+    let fogNearMul = 0.4;
+    let fogFarMul = 3.5;
+    switch (activeSceneType) {
+      case "cave": fogNearMul = 0.15; fogFarMul = 1.8; break;
+      case "forest": fogNearMul = 0.25; fogFarMul = 2.5; break;
+      case "desert": fogNearMul = 0.5; fogFarMul = 5.0; break;
+      case "ocean": case "beach": fogNearMul = 0.3; fogFarMul = 4.0; break;
+      case "mountain": fogNearMul = 0.35; fogFarMul = 4.5; break;
+      default: break;
+    }
+    scene.fog.near = Math.max(sceneRadius * fogNearMul, 15);
+    // 20E: Higher fog far minimum for flight visibility
+    scene.fog.far = Math.max(sceneRadius * fogFarMul, 220);
     fogBaseFar = scene.fog.far; // 16F: Capture for fog wave modulation
   }
 
@@ -975,13 +1116,14 @@ export function renderWorld(world: WorldModel): void {
     }
   }
 
+  // 20B: Consistent spawn distance for all scenes
   const spawnDist = 14 + rng() * 8;
   if (camera) {
     const spawnX = spawnTarget.x + Math.cos(spawnAngle) * spawnDist;
     const spawnZ = spawnTarget.z + Math.sin(spawnAngle) * spawnDist;
 
-    // 16A-D: Flatten terrain around spawn point
-    terrainFlattenPoints.push(new THREE.Vector3(spawnX, 8, spawnZ));
+    // 16A-D/18F: Flatten terrain around spawn point (wider for readability)
+    terrainFlattenPoints.push(new THREE.Vector3(spawnX, 12, spawnZ));
 
     // ── 15A: Grounded spawn — clamp to actual ground surface ─────────
     // Build collision first so getGroundHeightAt can probe surfaces
@@ -999,21 +1141,27 @@ export function renderWorld(world: WorldModel): void {
     playerVelY = 0;
     let spawnGroundY = getGroundHeightAt(spawnX, spawnZ);
 
-    // If spawn lands inside a collision box, nudge outward
+    // 15A: If camera would spawn inside a collision volume, nudge backward
     if (collidesAt(spawnX, spawnGroundY, spawnZ)) {
       for (let nudge = 2; nudge <= 12; nudge += 2) {
         const nx = spawnX + Math.cos(spawnAngle + Math.PI) * nudge;
         const nz = spawnZ + Math.sin(spawnAngle + Math.PI) * nudge;
-        if (!collidesAt(nx, spawnGroundY, nz)) {
-          playerPos.x = nx;
-          playerPos.z = nz;
-          spawnGroundY = getGroundHeightAt(nx, nz);
+        const ny = getGroundHeightAt(nx, nz);
+        if (!collidesAt(nx, ny, nz)) {
+          spawnGroundY = ny;
+          playerPos.set(nx, spawnGroundY, nz);
           break;
         }
       }
     }
 
-    playerPos.set(playerPos.x, spawnGroundY, playerPos.z);
+    if (playerPos.x === spawnX && playerPos.z === spawnZ) {
+      playerPos.set(spawnX, spawnGroundY, spawnZ);
+    }
+    // 20A: Flight-first — elevate spawn position so player starts airborne
+    if (currentPower === "flight" && flightActive) {
+      playerPos.y = Math.max(playerPos.y, spawnGroundY) + 12;
+    }
     playerSpawnPos.copy(playerPos); // 16G: save spawn for reset
     camera.position.set(playerPos.x, playerPos.y + PLAYER_EYE_HEIGHT, playerPos.z);
 
@@ -1021,12 +1169,15 @@ export function renderWorld(world: WorldModel): void {
     const lookTarget = anchorGroup
       ? anchorGroup.getWorldPosition(new THREE.Vector3())
       : compositionCenter;
+    // 18: Store primary landmark world position for cinematic look target
+    primaryLandmarkWorldPos = lookTarget.clone();
     const lookY = playerPos.y + PLAYER_EYE_HEIGHT;
     camera.lookAt(lookTarget.x, lookY, lookTarget.z);
     syncAnglesToCamera();
   }
 
   discoveredLandmarks.clear();
+  discoveryGraceFrames = 360; // ~6s grace after each new world load
 }
 
 export function disposeWorld(): void {
@@ -1055,6 +1206,13 @@ export function disposeWorld(): void {
   waterFlowMeshes.length = 0;
   landmarkEvents.length = 0;
   bellSwingGroups.length = 0;
+
+  // 20B: Clean up rain splashes
+  rainSplashes.forEach((sp) => {
+    sp.mesh.parent?.remove(sp.mesh);
+    (sp.mesh.material as THREE.Material).dispose();
+  });
+  rainSplashes.length = 0;
 
   // 14D: Dispose particle layers
   disposeParticles();
@@ -1102,7 +1260,8 @@ export function disposeWorld(): void {
   powerUsePressed = false;
   // 16C: Dispose physics
   disposePhysics();
-  activatePower("none");
+  // 20A: Flight stays default across world regeneration
+  activatePower("flight");
 }
 
 export function setControlsEnabled(enabled: boolean): void {
@@ -1360,13 +1519,14 @@ function updateMovement(delta: number): void {
   if (hasInput) inputDir.normalize();
 
   const sprinting = pressedKeys.has("ShiftLeft") || pressedKeys.has("ShiftRight") || (gp?.sprint ?? false);
+  const inFlight = currentPower === "flight" && flightActive;
   const targetSpeed = hasInput
-    ? (sprinting && isGrounded ? MOVE_SPEED * SPRINT_MULTIPLIER : MOVE_SPEED)
+    ? (inFlight ? MOVE_SPEED * 1.3 : (sprinting && isGrounded ? MOVE_SPEED * SPRINT_MULTIPLIER : MOVE_SPEED))
     : 0;
 
   // ── 16A: Acceleration-based horizontal movement ────────────────────
-  const accel = isGrounded ? GROUND_ACCEL : AIR_ACCEL;
-  const friction = isGrounded ? GROUND_FRICTION : AIR_FRICTION;
+  const accel = inFlight ? GROUND_ACCEL * 1.4 : (isGrounded ? GROUND_ACCEL : AIR_ACCEL);
+  const friction = inFlight ? GROUND_FRICTION * 0.6 : (isGrounded ? GROUND_FRICTION : AIR_FRICTION);
 
   if (hasInput) {
     // Accelerate toward desired direction
@@ -1387,25 +1547,30 @@ function updateMovement(delta: number): void {
   }
 
   // Clamp max horizontal speed
-  const maxH = MOVE_SPEED * SPRINT_MULTIPLIER * 1.05;
+  const maxH = inFlight ? MOVE_SPEED * 1.5 : MOVE_SPEED * SPRINT_MULTIPLIER * 1.05;
   if (movementVelocity.length() > maxH) {
     movementVelocity.normalize().multiplyScalar(maxH);
   }
 
   const moveDelta = movementVelocity.clone().multiplyScalar(delta);
 
-  // ── Horizontal collision (split axis) ──────────────────────────────
+  // ── Horizontal collision (split axis) — skip during flight ────────
   const newX = playerPos.x + moveDelta.x;
   const newZ = playerPos.z + moveDelta.z;
-  if (!collidesAt(newX, playerPos.y, playerPos.z)) {
+  if (inFlight) {
     playerPos.x = newX;
-  } else {
-    movementVelocity.x *= -0.1; // small bounce-back, not a full stop
-  }
-  if (!collidesAt(playerPos.x, playerPos.y, newZ)) {
     playerPos.z = newZ;
   } else {
-    movementVelocity.z *= -0.1;
+    if (!collidesAt(newX, playerPos.y, playerPos.z)) {
+      playerPos.x = newX;
+    } else {
+      movementVelocity.x *= -0.1;
+    }
+    if (!collidesAt(playerPos.x, playerPos.y, newZ)) {
+      playerPos.z = newZ;
+    } else {
+      movementVelocity.z *= -0.1;
+    }
   }
 
   // ── 16A: Vertical physics — gravity, jump, coyote ─────────────────
@@ -1680,18 +1845,20 @@ function updateLivingEntities(delta: number): void {
       // Subtle idle sway (breathing)
       le.group.rotation.z = Math.sin(time * 1.5 + le.idlePhase) * 0.03;
       // 16F: Small wander steps when not paused
+      // 19G: Interior humanoids wander tighter and slower
       if (le.pauseTimer > 0) {
         le.pauseTimer -= delta;
       } else {
-        const speed = 0.15 * delta;
+        const isIndoor = activeSceneType === "interior" || activeSceneType === "temple";
+        const speed = (isIndoor ? 0.08 : 0.15) * delta;
+        const maxWander = isIndoor ? 2 : 3;
         const nx = le.group.position.x + Math.cos(le.wanderAngle) * speed;
         const nz = le.group.position.z + Math.sin(le.wanderAngle) * speed;
         const dist = Math.sqrt((nx - le.basePos.x) ** 2 + (nz - le.basePos.z) ** 2);
-        if (dist < 3) {
+        if (dist < maxWander) {
           le.group.position.x = nx;
           le.group.position.z = nz;
-          const gY = getGroundHeightAt(nx, nz);
-          le.group.position.y = gY;
+          le.group.position.y = getGroundHeightAt(nx, nz) - groundBaseY;
         } else {
           le.wanderAngle = Math.atan2(le.basePos.z - le.group.position.z, le.basePos.x - le.group.position.x);
         }
@@ -1710,7 +1877,7 @@ function updateLivingEntities(delta: number): void {
         const nz = le.group.position.z + Math.sin(le.fleeAngle) * speed;
         le.group.position.x = nx;
         le.group.position.z = nz;
-        le.group.position.y = getGroundHeightAt(nx, nz);
+        le.group.position.y = getGroundHeightAt(nx, nz) - groundBaseY;
         le.group.rotation.y = le.fleeAngle;
         // Bob faster during flee
         if (le.group.children.length > 0) {
@@ -1744,7 +1911,7 @@ function updateLivingEntities(delta: number): void {
           if (dist < 5) {
             le.group.position.x = nx;
             le.group.position.z = nz;
-            le.group.position.y = getGroundHeightAt(nx, nz);
+            le.group.position.y = getGroundHeightAt(nx, nz) - groundBaseY;
           } else {
             le.wanderAngle = Math.atan2(le.basePos.z - le.group.position.z, le.basePos.x - le.group.position.x);
           }
@@ -1772,6 +1939,32 @@ function updateLivingEntities(delta: number): void {
         const blinkDur = 0.15 + Math.random() * 0.3;
         setTimeout(() => { le.group.visible = true; }, blinkDur * 1000);
         le.blinkTimer = 6 + Math.random() * 12;
+      }
+    } else if (le.kind === "turtle") {
+      // 18C: Turtle — slow waddle, mostly stationary, grazing motion
+      if (le.wanderTimer <= 0) {
+        le.wanderAngle += (Math.random() - 0.5) * 1.2;
+        le.wanderTimer = 4 + Math.random() * 8;
+        if (Math.random() < 0.5) le.pauseTimer = 2 + Math.random() * 4;
+      }
+      if (le.pauseTimer > 0) {
+        le.pauseTimer -= delta;
+      } else {
+        const speed = 0.12 * delta;
+        const nx = le.group.position.x + Math.cos(le.wanderAngle) * speed;
+        const nz = le.group.position.z + Math.sin(le.wanderAngle) * speed;
+        const dist = Math.sqrt((nx - le.basePos.x) ** 2 + (nz - le.basePos.z) ** 2);
+        if (dist < 4) {
+          le.group.position.x = nx;
+          le.group.position.z = nz;
+        } else {
+          le.wanderAngle = Math.atan2(le.basePos.z - le.group.position.z, le.basePos.x - le.group.position.x);
+        }
+        le.group.rotation.y = le.wanderAngle;
+      }
+      // Subtle head bob
+      if (le.group.children.length > 0) {
+        le.group.children[2].position.y = 0.22 + Math.sin(time * 0.8 + le.idlePhase) * 0.03;
       }
     }
   }
@@ -2063,8 +2256,8 @@ function updateGamepadHint(connected: boolean): void {
 
 // ── 16E-F: Power framework ──────────────────────────────────────────
 type PowerType = "none" | "flight" | "laser" | "telekinesis" | "destruction" | "shockwave";
-let currentPower: PowerType = "none";
-let flightActive = false;
+let currentPower: PowerType = "flight";
+let flightActive = true;
 let laserBeam: THREE.Line | null = null;
 // 16B: Power state
 let laserCooldown = 0;
@@ -2305,49 +2498,49 @@ function updateLaserBeam(delta: number): void {
   const beamDir = hitPoint.clone().sub(origin).normalize();
   const beamQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), beamDir);
 
-  // Core beam: thin bright red cylinder (reuse or create)
+  // 18D: Core beam — thicker, brighter, more impactful
   if (laserBeamMesh) {
     laserBeamMesh.geometry.dispose();
-    laserBeamMesh.geometry = new THREE.CylinderGeometry(0.02, 0.02, beamLen, 4, 1);
+    laserBeamMesh.geometry = new THREE.CylinderGeometry(0.07, 0.07, beamLen, 8, 1);
     laserBeamMesh.position.copy(beamMid);
     laserBeamMesh.quaternion.copy(beamQuat);
-    // Subtle pulse
-    (laserBeamMesh.material as THREE.MeshBasicMaterial).opacity = 0.85 + Math.sin(performance.now() * 0.03) * 0.1;
+    (laserBeamMesh.material as THREE.MeshBasicMaterial).opacity = 0.97 + Math.sin(performance.now() * 0.03) * 0.03;
   } else {
-    const coreGeo = new THREE.CylinderGeometry(0.02, 0.02, beamLen, 4, 1);
-    const coreMat = new THREE.MeshBasicMaterial({ color: 0xff2020, transparent: true, opacity: 0.95 });
+    const coreGeo = new THREE.CylinderGeometry(0.07, 0.07, beamLen, 8, 1);
+    const coreMat = new THREE.MeshBasicMaterial({ color: 0xff1010, transparent: true, opacity: 0.97 });
     laserBeamMesh = new THREE.Mesh(coreGeo, coreMat);
     laserBeamMesh.position.copy(beamMid);
     laserBeamMesh.quaternion.copy(beamQuat);
     scene.add(laserBeamMesh);
   }
 
-  // Glow shell (reuse or create)
+  // 18D: Wide glow shell + outer haze (reuse or create)
   if (laserGlowMesh) {
     laserGlowMesh.geometry.dispose();
-    laserGlowMesh.geometry = new THREE.CylinderGeometry(0.08, 0.08, beamLen, 6, 1);
+    laserGlowMesh.geometry = new THREE.CylinderGeometry(0.26, 0.26, beamLen, 8, 1);
     laserGlowMesh.position.copy(beamMid);
     laserGlowMesh.quaternion.copy(beamQuat);
-    (laserGlowMesh.material as THREE.MeshBasicMaterial).opacity = 0.2 + Math.sin(performance.now() * 0.025) * 0.08;
+    (laserGlowMesh.material as THREE.MeshBasicMaterial).opacity = 0.35 + Math.sin(performance.now() * 0.025) * 0.12;
   } else {
-    const glowGeo = new THREE.CylinderGeometry(0.08, 0.08, beamLen, 6, 1);
-    const glowMat = new THREE.MeshBasicMaterial({ color: 0xff4422, transparent: true, opacity: 0.25, depthWrite: false });
+    const glowGeo = new THREE.CylinderGeometry(0.26, 0.26, beamLen, 8, 1);
+    const glowMat = new THREE.MeshBasicMaterial({ color: 0xff5522, transparent: true, opacity: 0.38, depthWrite: false });
     laserGlowMesh = new THREE.Mesh(glowGeo, glowMat);
     laserGlowMesh.position.copy(beamMid);
     laserGlowMesh.quaternion.copy(beamQuat);
     scene.add(laserGlowMesh);
   }
 
+  // 18D: Hit flash sphere — larger and brighter for readability
   // Hit flash sphere at impact (update position each frame)
   if (didHitObject) {
     if (laserHitFlash) {
       laserHitFlash.position.copy(hitPoint);
-      const s = 0.25 + Math.sin(performance.now() * 0.04) * 0.1;
+      const s = 0.45 + Math.sin(performance.now() * 0.04) * 0.18;
       laserHitFlash.scale.set(s, s, s);
-      (laserHitFlash.material as THREE.MeshBasicMaterial).opacity = 0.6 + Math.sin(performance.now() * 0.03) * 0.2;
+      (laserHitFlash.material as THREE.MeshBasicMaterial).opacity = 0.75 + Math.sin(performance.now() * 0.03) * 0.2;
     } else {
-      const flashGeo = new THREE.SphereGeometry(0.3, 8, 8);
-      const flashMat = new THREE.MeshBasicMaterial({ color: 0xffaa44, transparent: true, opacity: 0.7, depthWrite: false });
+      const flashGeo = new THREE.SphereGeometry(0.55, 10, 10);
+      const flashMat = new THREE.MeshBasicMaterial({ color: 0xffcc22, transparent: true, opacity: 0.8, depthWrite: false });
       laserHitFlash = new THREE.Mesh(flashGeo, flashMat);
       laserHitFlash.position.copy(hitPoint);
       scene.add(laserHitFlash);
@@ -2395,14 +2588,27 @@ function grabTelekinesisTarget(): void {
       root.traverse((child: THREE.Object3D) => {
         if (child instanceof THREE.Mesh && child.material instanceof THREE.MeshStandardMaterial) {
           child.material.emissive.setHex(0x8844ff);
-          child.material.emissiveIntensity = 0.8;
+          child.material.emissiveIntensity = 0.9;
         }
       });
       // 16D: Create tether line from player to object
       const tetherGeo = new THREE.BufferGeometry().setFromPoints([origin, root.position]);
-      const tetherMat = new THREE.LineBasicMaterial({ color: 0x9966ff, transparent: true, opacity: 0.6 });
+      const tetherMat = new THREE.LineBasicMaterial({ color: 0xaa66ff, transparent: true, opacity: 0.75 });
       telekinesisTether = new THREE.Line(tetherGeo, tetherMat);
       scene.add(telekinesisTether);
+      // 18: Orbiting aura ring around grabbed object
+      const auraGeo = new THREE.TorusGeometry(1.2, 0.06, 8, 32);
+      const auraMat = new THREE.MeshBasicMaterial({ color: 0xaa44ff, transparent: true, opacity: 0.55, depthWrite: false });
+      const auraRing = new THREE.Mesh(auraGeo, auraMat);
+      auraRing.userData.tkAura = true;
+      root.add(auraRing);
+      // second ring at 90°
+      const auraGeo2 = new THREE.TorusGeometry(1.4, 0.04, 8, 32);
+      const auraMat2 = new THREE.MeshBasicMaterial({ color: 0x6622ff, transparent: true, opacity: 0.35, depthWrite: false });
+      const auraRing2 = new THREE.Mesh(auraGeo2, auraMat2);
+      auraRing2.rotation.x = Math.PI / 2;
+      auraRing2.userData.tkAura = true;
+      root.add(auraRing2);
       playTelekinesisGrabSound();
       showFeedback("Grabbed! Release to throw.");
       break;
@@ -2432,6 +2638,15 @@ function updateTelekinesisHold(): void {
   }
   // 16E: Gentle spin (slower, more controlled)
   telekinesisTarget.rotation.y += 0.018;
+  // 18: Animate aura rings
+  telekinesisTarget.traverse((child: THREE.Object3D) => {
+    if (child instanceof THREE.Mesh && child.userData.tkAura) {
+      child.rotation.y += 0.04;
+      child.rotation.z += 0.025;
+      const pulse = 0.45 + Math.sin(performance.now() * 0.006) * 0.15;
+      if (child.material instanceof THREE.MeshBasicMaterial) child.material.opacity = pulse;
+    }
+  });
 
   // 16D: Update tether line
   if (telekinesisTether) {
@@ -2465,6 +2680,12 @@ function dropTelekinesisTarget(): void {
     if (child instanceof THREE.Mesh && child.material instanceof THREE.MeshStandardMaterial) {
       child.material.emissive.setHex(0x000000);
       child.material.emissiveIntensity = 0;
+    }
+    // 18: Remove orbiting aura rings
+    if (child instanceof THREE.Mesh && child.userData.tkAura) {
+      child.parent?.remove(child);
+      child.geometry.dispose();
+      if (child.material instanceof THREE.Material) child.material.dispose();
     }
   });
   // Cleanup tracked data
@@ -2785,25 +3006,48 @@ function fireShockwave(): void {
   const SHOCKWAVE_RADIUS = 12;
   const SHOCKWAVE_FORCE = 18;
 
-  // Visual: expanding ring
-  const ringGeo = new THREE.TorusGeometry(0.5, 0.15, 8, 24);
-  const ringMat = new THREE.MeshBasicMaterial({ color: 0x44aaff, transparent: true, opacity: 0.7, depthWrite: false });
+  // Visual: expanding ring (18D: brighter + double ring)
+  const ringGeo = new THREE.TorusGeometry(0.5, 0.2, 8, 32);
+  const ringMat = new THREE.MeshBasicMaterial({ color: 0x66ccff, transparent: true, opacity: 0.9, depthWrite: false });
   const ring = new THREE.Mesh(ringGeo, ringMat);
   ring.position.copy(pushOrigin);
   ring.lookAt(pushOrigin.clone().add(forward));
   scene.add(ring);
+  // 18D: Secondary inner flash ring
+  const ring2Geo = new THREE.TorusGeometry(0.3, 0.3, 6, 24);
+  const ring2Mat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.6, depthWrite: false });
+  const ring2 = new THREE.Mesh(ring2Geo, ring2Mat);
+  ring2.position.copy(pushOrigin);
+  ring2.lookAt(pushOrigin.clone().add(forward));
+  scene.add(ring2);
+  // 18: Ground shockwave disc — horizontal ring expanding outward
+  const groundRingGeo = new THREE.TorusGeometry(0.5, 0.25, 6, 48);
+  const groundRingMat = new THREE.MeshBasicMaterial({ color: 0x44aaff, transparent: true, opacity: 0.55, depthWrite: false });
+  const groundRing = new THREE.Mesh(groundRingGeo, groundRingMat);
+  groundRing.rotation.x = -Math.PI / 2;
+  groundRing.position.set(pushOrigin.x, 0.15, pushOrigin.z);
+  scene.add(groundRing);
+  // 18: Spawn debris burst particles from origin
+  spawnDustBurst(pushOrigin);
   const ringStart = performance.now();
   const animateRing = () => {
     const elapsed = (performance.now() - ringStart) / 1000;
-    if (elapsed > 0.4) {
-      scene?.remove(ring);
-      ringGeo.dispose();
-      ringMat.dispose();
+    if (elapsed > 0.6) {
+      scene?.remove(ring); scene?.remove(ring2); scene?.remove(groundRing);
+      ringGeo.dispose(); ringMat.dispose();
+      ring2Geo.dispose(); ring2Mat.dispose();
+      groundRingGeo.dispose(); groundRingMat.dispose();
       return;
     }
-    const s = 1 + elapsed * 30;
+    const s = 1 + elapsed * 32;
     ring.scale.set(s, s, s);
-    ringMat.opacity = 0.7 * (1 - elapsed / 0.4);
+    ringMat.opacity = 0.9 * (1 - elapsed / 0.6);
+    const s2 = 1 + elapsed * 50;
+    ring2.scale.set(s2, s2, s2);
+    ring2Mat.opacity = 0.6 * Math.max(0, 1 - elapsed / 0.28);
+    const sg = 1 + elapsed * SHOCKWAVE_RADIUS * 1.8;
+    groundRing.scale.set(sg, sg, sg);
+    groundRingMat.opacity = 0.55 * (1 - elapsed / 0.6);
     requestAnimationFrame(animateRing);
   };
   requestAnimationFrame(animateRing);
@@ -2833,7 +3077,7 @@ function fireShockwave(): void {
 
 function updateFlightMovement(delta: number, forward: THREE.Vector3, right: THREE.Vector3): void {
   // In flight: no gravity, vertical movement via Space/Shift or gamepad
-  const flySpeed = MOVE_SPEED * 1.2;
+  const flySpeed = MOVE_SPEED * 1.3;
   let vertInput = 0;
   if (pressedKeys.has("Space")) vertInput += 1;
   if (pressedKeys.has("ShiftLeft") || pressedKeys.has("ShiftRight")) vertInput -= 1;
@@ -2842,7 +3086,12 @@ function updateFlightMovement(delta: number, forward: THREE.Vector3, right: THRE
   if (gp?.buttons[0]?.pressed) vertInput += 1;
   if (gp?.buttons[1]?.pressed) vertInput -= 1;
 
-  playerVelY = vertInput * flySpeed * 0.6;
+  // Smooth vertical acceleration for no jitter
+  const targetVelY = vertInput * flySpeed * 0.7;
+  const smoothFactor = 1 - Math.exp(-8 * delta);
+  playerVelY += (targetVelY - playerVelY) * smoothFactor;
+  // Snap to zero when near zero and no input to avoid drift
+  if (vertInput === 0 && Math.abs(playerVelY) < 0.05) playerVelY = 0;
   playerPos.y += playerVelY * delta;
   // Keep above ground
   const gY = getGroundHeight(playerPos.x, playerPos.z);
@@ -3189,6 +3438,7 @@ function checkLandmarkDiscovery(obj: THREE.Object3D): void {
 }
 
 function checkProximityDiscovery(): void {
+  if (discoveryGraceFrames > 0) { discoveryGraceFrames--; return; }
   for (const box of collisionBoxes) {
     if (!box.isCloud) continue;
     // Skip — proximity discovery only for landmarks, handled via interaction
@@ -3439,6 +3689,8 @@ function generateChunkContent(cx: number, cz: number): THREE.Group {
 
 function updateStreaming(): void {
   if (!streamingEnabled || !worldGroup) return;
+  // 20B: Streaming disabled for cave scenes — enclosed space is whole world
+  if (activeSceneType === "cave") return;
 
   const [pcx, pcz] = playerChunkCoords();
   if (pcx === lastPlayerChunkX && pcz === lastPlayerChunkZ) return;
@@ -3583,9 +3835,9 @@ function collectNaturalMotion(): void {
 type DensityLevel = "low" | "medium" | "high";
 
 function inferDensityLevel(semantics: SemanticTags): DensityLevel {
-  // Prefer explicit density from semantic inference (Iter 16)
-  if ((semantics as any).density === "dense") return "high";
-  if ((semantics as any).density === "sparse") return "low";
+  // 19E: Use explicit density from semantic inference (supports crowd hints from 19A)
+  if (semantics.density === "dense" || semantics.density === "endless") return "high";
+  if (semantics.density === "sparse") return "low";
   if (semantics.scale === "giant" || semantics.scale === "endless") return "high";
   if (semantics.scale === "tiny") return "low";
   if (semantics.mood === "chaotic" || semantics.mood === "mystical") return "high";
@@ -3594,9 +3846,9 @@ function inferDensityLevel(semantics: SemanticTags): DensityLevel {
 
 function densityCounts(level: DensityLevel): { ground: number; mid: number; upper: number; background: number } {
   switch (level) {
-    case "high": return { ground: 45, mid: 20, upper: 10, background: 18 };
-    case "medium": return { ground: 28, mid: 12, upper: 6, background: 14 };
-    case "low": return { ground: 15, mid: 6, upper: 3, background: 10 };
+    case "high": return { ground: 55, mid: 25, upper: 8, background: 14 };
+    case "medium": return { ground: 38, mid: 18, upper: 5, background: 10 };
+    case "low": return { ground: 22, mid: 10, upper: 2, background: 8 };
   }
 }
 
@@ -3610,37 +3862,43 @@ function populateDensityLayers(
   const density = inferDensityLevel(semantics);
   const counts = densityCounts(density);
   const env = semantics.environment;
+  const scene = activeSceneType;
 
-  // 14C: Center exclusion zone — keep inner 12 units clear for landmark readability
-  const CENTER_EXCLUSION = 12;
+  // 17C/18F/20B: Scatter radius for density layers — wider for flyable exploration
+  const SCATTER_RADIUS = 60;
+  const CENTER_EXCLUSION = 9;
 
-  // --- Ground layer: small terrain detail ---
+  // --- Ground layer: small terrain detail — distributed across zones ---
   for (let i = 0; i < counts.ground; i++) {
     const angle = rng() * Math.PI * 2;
-    const dist = CENTER_EXCLUSION + rng() * (80 - CENTER_EXCLUSION);
+    const dist = CENTER_EXCLUSION + rng() * (SCATTER_RADIUS - CENTER_EXCLUSION);
     const pos = new THREE.Vector3(Math.cos(angle) * dist, 0, Math.sin(angle) * dist);
-    if (placedPositions.some((p) => p.distanceTo(pos) < 6)) continue;
-    const detail = createGroundDetail(rng, env, sm);
+    if (placedPositions.some((p) => p.distanceTo(pos) < 3)) continue;
+    const detail = createGroundDetail(rng, env, sm, scene);
     detail.position.copy(pos);
     worldGroup.add(detail);
   }
 
-  // --- Mid layer: filler structures ---
-  for (let i = 0; i < counts.mid; i++) {
+  // --- Mid layer: filler structures — spread into mid zone ---
+  const midRadius = SCATTER_RADIUS;
+  const midCount = counts.mid;
+  for (let i = 0; i < midCount; i++) {
     const angle = rng() * Math.PI * 2;
-    const dist = CENTER_EXCLUSION + 5 + rng() * 50;
+    const dist = CENTER_EXCLUSION + 3 + rng() * midRadius;
     const pos = new THREE.Vector3(Math.cos(angle) * dist, 0, Math.sin(angle) * dist);
     if (placedPositions.some((p) => p.distanceTo(pos) < SCALE.minSpacing)) continue;
-    const filler = createMidLayerFiller(rng, env, sm);
+    const filler = createMidLayerFiller(rng, env, sm, scene);
     filler.position.copy(pos);
     worldGroup.add(filler);
   }
 
-  // --- Upper layer: floating elements ---
-  for (let i = 0; i < counts.upper; i++) {
+  // --- Upper layer: floating elements (only for sky/surreal scenes) ---
+  const upperCount = (scene === "cave") ? 0
+    : (scene === "sky" || scene === "surreal") ? counts.upper : Math.min(counts.upper, 2);
+  for (let i = 0; i < upperCount; i++) {
     const angle = rng() * Math.PI * 2;
-    const dist = 8 + rng() * 60;
-    const y = 20 + rng() * 40;
+    const dist = 8 + rng() * 35;
+    const y = 15 + rng() * 25;
     const pos = new THREE.Vector3(Math.cos(angle) * dist, y, Math.sin(angle) * dist);
     const floating = createUpperLayerElement(rng, env, sm);
     floating.position.copy(pos);
@@ -3650,49 +3908,129 @@ function populateDensityLayers(
   }
 
   // --- Background layer: distant silhouettes ---
-  for (let i = 0; i < counts.background; i++) {
+  const bgCount = counts.background;
+  for (let i = 0; i < bgCount; i++) {
     const angle = (i / counts.background) * Math.PI * 2 + (rng() - 0.5) * 0.4;
-    const dist = 100 + rng() * 120;
-    const silhouette = createBackgroundSilhouette(rng, env, sm);
+    const dist = 55 + rng() * 50;
+    const silhouette = createBackgroundSilhouette(rng, env, sm, scene);
     silhouette.position.set(Math.cos(angle) * dist, 0, Math.sin(angle) * dist);
     worldGroup.add(silhouette);
   }
 
-  // ── 16C: Living presence — scatter a few procedural beings ─────────
-  const presenceCount = density === "high" ? 6 : density === "medium" ? 3 : 1;
-  // Context-aware type weights: [humanoid, animal, creature]
+  // ── 18C: Living presence — scene-specific density boost ──
+  // 18C: City and interior get many more humanoids; beach/forest get more life
+  const basePresenceCount = density === "high" ? 16 : density === "medium" ? 11 : 6;
+  const presenceCount = (scene === "city") ? Math.max(basePresenceCount, 22)
+    : (scene === "beach") ? Math.max(basePresenceCount, 16)
+    : (scene === "forest") ? Math.max(basePresenceCount, 14)
+    : (scene === "arena" || scene === "temple") ? Math.max(basePresenceCount, 12)
+    : basePresenceCount;
+  // 17B: Scene-aware type weights: [humanoid, animal, creature]
   let presenceWeights: number[];
-  if (env === "forest" || env === "generic") {
-    presenceWeights = [0.2, 0.6, 0.2]; // nature → mostly animals
-  } else if (env === "ruins" || env === "desert") {
-    presenceWeights = [0.5, 0.15, 0.35]; // ruins → wanderers + creatures
-  } else if (env === "void" || env === "surreal") {
-    presenceWeights = [0.1, 0.1, 0.8]; // surreal → mostly creatures
-  } else {
-    presenceWeights = [0.4, 0.3, 0.3];
+  switch (scene) {
+    case "beach":    presenceWeights = [0.6, 0.25, 0.15]; break;
+    case "city":     presenceWeights = [0.88, 0.02, 0.10]; break;
+    case "forest":   presenceWeights = [0.1, 0.75, 0.15]; break;
+    case "temple":   presenceWeights = [0.5, 0.1, 0.4]; break;
+    case "arena":    presenceWeights = [0.65, 0.05, 0.3]; break;
+    case "ocean":    presenceWeights = [0.2, 0.5, 0.3]; break;
+    case "mountain": presenceWeights = [0.2, 0.5, 0.3]; break;
+    case "cave":     presenceWeights = [0.1, 0.3, 0.6]; break;
+    case "surreal":  presenceWeights = [0.1, 0.1, 0.8]; break;
+    case "desert":   presenceWeights = [0.3, 0.3, 0.4]; break;
+    default:         presenceWeights = [0.4, 0.3, 0.3]; break;
   }
   for (let i = 0; i < presenceCount; i++) {
     const angle = rng() * Math.PI * 2;
-    const dist = CENTER_EXCLUSION + 2 + rng() * 40;
-    const pos = new THREE.Vector3(Math.cos(angle) * dist, 0, Math.sin(angle) * dist);
-    if (placedPositions.some((p) => p.distanceTo(pos) < 3)) continue;
-    // Weighted random type selection
+    const dist = CENTER_EXCLUSION + rng() * SCATTER_RADIUS;
+    const bx = Math.cos(angle) * dist;
+    const bz = Math.sin(angle) * dist;
+    const pos = new THREE.Vector3(bx, getTerrainNoiseY(bx, bz), bz);
+    if (placedPositions.some((p) => p.distanceTo(pos) < 2)) continue;
     const roll = rng();
     const creatorIdx = roll < presenceWeights[0] ? 0 : roll < presenceWeights[0] + presenceWeights[1] ? 1 : 2;
     const being = livingPresenceCreators[creatorIdx](rng);
-    // 16C-E: Scale up for visibility
-    const s = 1.6 + rng() * 0.4; // 1.6x - 2.0x larger
+    const s = 1.8 + rng() * 0.4;
     being.scale.set(s, s, s);
     being.position.copy(pos);
     being.userData.interactionTag = "living-presence";
     worldGroup.add(being);
   }
+
+  // 18C: Beach turtles — spawn near shore (negative Z toward water)
+  if (scene === "beach") {
+    const turtleCount = 4 + Math.floor(rng() * 5);
+    for (let ti = 0; ti < turtleCount; ti++) {
+      const turtle = createTurtleGroup(rng);
+      const s = 1.8 + rng() * 0.8;
+      turtle.scale.set(s, s, s);
+      // Spread turtles naturally along shoreline
+      const turtleAngle = (ti / turtleCount) * Math.PI * 2;
+      const tx = (rng() - 0.5) * SCATTER_RADIUS * 0.9;
+      const tz = -(2 + rng() * 15); // closer to water at negative Z
+      turtle.position.set(tx, getTerrainNoiseY(tx, tz), tz);
+      turtle.rotation.y = turtleAngle;
+      turtle.userData.interactionTag = "living-presence";
+      worldGroup.add(turtle);
+    }
+  }
+
+  // 18C: Landmark companions — spawn small cluster near primary landmark
+  // so the landmark feels inhabited when the player first sees it
+  if (placedPositions.length > 0) {
+    const landmarkPos = placedPositions[0]; // first placed = primary/anchor
+    const companionCount = scene === "city" ? 4 + Math.floor(rng() * 4)
+      : scene === "temple" || scene === "arena" ? 3 + Math.floor(rng() * 3)
+      : scene === "beach" ? 2 + Math.floor(rng() * 2)
+      : scene === "forest" ? 1 + Math.floor(rng() * 2)
+      : 0;
+    for (let ci = 0; ci < companionCount; ci++) {
+      const cAngle = rng() * Math.PI * 2;
+      const cDist = 4 + rng() * 7;
+      const cx = landmarkPos.x + Math.cos(cAngle) * cDist;
+      const cz = landmarkPos.z + Math.sin(cAngle) * cDist;
+      const cPos = new THREE.Vector3(cx, getTerrainNoiseY(cx, cz), cz);
+      let companion: THREE.Group;
+      if (scene === "beach" && rng() < 0.4) {
+        companion = createTurtleGroup(rng);
+        companion.scale.set(1.8, 1.8, 1.8);
+      } else if (scene === "forest" || scene === "mountain" || scene === "ocean") {
+        companion = createAnimalGroup(rng);
+        companion.scale.set(1.8, 1.8, 1.8);
+      } else if (scene === "cave" || scene === "surreal") {
+        companion = createCreatureGroup(rng);
+        companion.scale.set(1.6, 1.6, 1.6);
+      } else {
+        companion = createHumanoidGroup(rng);
+        companion.scale.set(1.9, 1.9, 1.9);
+      }
+      companion.position.copy(cPos);
+      companion.userData.interactionTag = "living-presence";
+      worldGroup.add(companion);
+    }
+  }
 }
 
-function createGroundDetail(rng: () => number, env: EnvironmentType, sm: number): THREE.Group {
+// ── 17B: Scene-to-environment mapping for density layers ─────────────
+// Maps scene types to the appropriate ground/mid-layer environment
+// so that scene-irrelevant objects (mountains on beach, etc.) don't spawn
+function sceneToGroundEnv(scene: SceneType, fallback: EnvironmentType): EnvironmentType {
+  const map: Record<SceneType, EnvironmentType> = {
+    beach: "coastal", ocean: "ocean", city: "city", forest: "forest",
+    mountain: "mountain", cave: "cave", arena: "ruins", temple: "ruins",
+    interior: "city", desert: "desert", frozen: "frozen", sky: "sky",
+    surreal: "surreal", generic: fallback,
+  };
+  return map[scene] ?? fallback;
+}
+
+function createGroundDetail(rng: () => number, env: EnvironmentType, sm: number, scene?: SceneType): THREE.Group {
   const group = new THREE.Group();
 
-  if (env === "forest" || env === "generic") {
+  // 17B/19D: Use scene type for ground detail selection when available
+  const effectiveEnv = scene ? sceneToGroundEnv(scene, env) : env;
+
+  if (effectiveEnv === "forest" || effectiveEnv === "generic") {
     // 16D: Grass clumps + bushes
     const grassMat = new THREE.MeshStandardMaterial({ color: 0x2a5a22, roughness: 0.9, side: THREE.DoubleSide });
     const grassBladeCount = 4 + Math.floor(rng() * 8);
@@ -3717,7 +4055,7 @@ function createGroundDetail(rng: () => number, env: EnvironmentType, sm: number)
       bush.castShadow = true;
       group.add(bush);
     }
-  } else if (env === "city") {
+  } else if (effectiveEnv === "city") {
     const mat = new THREE.MeshStandardMaterial({ color: 0x4a4a50, roughness: 0.8 });
     const count = 1 + Math.floor(rng() * 3);
     for (let i = 0; i < count; i++) {
@@ -3728,7 +4066,7 @@ function createGroundDetail(rng: () => number, env: EnvironmentType, sm: number)
       box.rotation.y = rng() * Math.PI;
       group.add(box);
     }
-  } else if (env === "ocean") {
+  } else if (effectiveEnv === "ocean") {
     const mat = new THREE.MeshStandardMaterial({ color: 0x5a6570, roughness: 0.85 });
     const r = (0.4 + rng() * 1.0) * sm;
     const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(r, 0), mat);
@@ -3736,14 +4074,14 @@ function createGroundDetail(rng: () => number, env: EnvironmentType, sm: number)
     rock.rotation.set(rng() * Math.PI, rng() * Math.PI, 0);
     rock.castShadow = true;
     group.add(rock);
-  } else if (env === "desert") {
+  } else if (effectiveEnv === "desert") {
     const mat = new THREE.MeshStandardMaterial({ color: 0xb89d6a, roughness: 0.95 });
     const r = (0.5 + rng() * 1.5) * sm;
     const dune = new THREE.Mesh(new THREE.SphereGeometry(r, 8, 4), mat);
     dune.scale.y = 0.3;
     dune.position.y = r * 0.1;
     group.add(dune);
-  } else if (env === "mountain") {
+  } else if (effectiveEnv === "mountain") {
     const mat = new THREE.MeshStandardMaterial({ color: 0x6b7b80, roughness: 0.9 });
     const count = 1 + Math.floor(rng() * 3);
     for (let i = 0; i < count; i++) {
@@ -3754,14 +4092,14 @@ function createGroundDetail(rng: () => number, env: EnvironmentType, sm: number)
       boulder.castShadow = true;
       group.add(boulder);
     }
-  } else if (env === "sky") {
+  } else if (effectiveEnv === "sky") {
     const mat = new THREE.MeshStandardMaterial({ color: 0xe8e8f0, roughness: 0.9, transparent: true, opacity: 0.5 });
     const r = (0.5 + rng() * 1.5) * sm;
     const wisp = new THREE.Mesh(new THREE.SphereGeometry(r, 6, 6), mat);
     wisp.scale.y = 0.3;
     wisp.position.y = 0.5 + rng() * 3;
     group.add(wisp);
-  } else if (env === "coastal") {
+  } else if (effectiveEnv === "coastal") {
     const mat = new THREE.MeshStandardMaterial({ color: 0xa0967a, roughness: 0.9 });
     const count = 1 + Math.floor(rng() * 3);
     for (let i = 0; i < count; i++) {
@@ -3772,30 +4110,45 @@ function createGroundDetail(rng: () => number, env: EnvironmentType, sm: number)
       shell.rotation.set(rng() * Math.PI, rng() * Math.PI, 0);
       group.add(shell);
     }
-  } else if (env === "cave") {
+    // 18B: Beach foam edge — flat white strips, more frequent and layered
+    const foamChance = rng();
+    if (foamChance < 0.75) {
+      const foamCount = 1 + Math.floor(rng() * 3);
+      for (let fi = 0; fi < foamCount; fi++) {
+        const foamMat = new THREE.MeshStandardMaterial({
+          color: 0xffffff, roughness: 0.95, transparent: true, opacity: 0.25 + rng() * 0.25
+        });
+        const fw = (2 + rng() * 3) * sm;
+        const foam = new THREE.Mesh(new THREE.PlaneGeometry(fw, (0.2 + rng() * 0.3) * sm), foamMat);
+        foam.rotation.x = -Math.PI / 2;
+        foam.position.set((rng() - 0.5) * 2, 0.02 + fi * 0.005, (rng() - 0.5) * 1);
+        group.add(foam);
+      }
+    }
+  } else if (effectiveEnv === "cave") {
     const mat = new THREE.MeshStandardMaterial({ color: 0x3a3a3e, roughness: 0.9 });
     const h = (0.5 + rng() * 1.5) * sm;
     const spike = new THREE.Mesh(new THREE.ConeGeometry(0.2 * sm, h, 5), mat);
     spike.position.y = h / 2;
     group.add(spike);
-  } else if (env === "frozen") {
+  } else if (effectiveEnv === "frozen") {
     const mat = new THREE.MeshStandardMaterial({ color: 0xc0d8ee, roughness: 0.1, transparent: true, opacity: 0.7 });
     const r = (0.3 + rng() * 0.7) * sm;
     const chunk = new THREE.Mesh(new THREE.OctahedronGeometry(r, 0), mat);
     chunk.position.y = r * 0.3;
     chunk.rotation.set(rng() * Math.PI, rng() * Math.PI, 0);
     group.add(chunk);
-  } else if (env === "storm" || env === "celestial") {
+  } else if (effectiveEnv === "storm" || effectiveEnv === "celestial") {
     const mat = new THREE.MeshStandardMaterial({
-      color: env === "storm" ? 0x4a6a8a : 0x8a8aff,
-      emissive: new THREE.Color(env === "storm" ? 0x2a4a6a : 0x4a4aaa),
+      color: effectiveEnv === "storm" ? 0x4a6a8a : 0x8a8aff,
+      emissive: new THREE.Color(effectiveEnv === "storm" ? 0x2a4a6a : 0x4a4aaa),
       emissiveIntensity: 0.3, roughness: 0.3
     });
     const r = (0.1 + rng() * 0.3) * sm;
     const spark = new THREE.Mesh(new THREE.SphereGeometry(r, 6, 6), mat);
     spark.position.set((rng() - 0.5) * 3, 0.5 + rng() * 2, (rng() - 0.5) * 3);
     group.add(spark);
-  } else if (env === "ruins") {
+  } else if (effectiveEnv === "ruins") {
     const mat = new THREE.MeshStandardMaterial({ color: 0x7a7568, roughness: 0.9 });
     const count = 2 + Math.floor(rng() * 3);
     for (let i = 0; i < count; i++) {
@@ -3805,7 +4158,7 @@ function createGroundDetail(rng: () => number, env: EnvironmentType, sm: number)
       rubble.rotation.set(rng() * 0.3, rng() * Math.PI, rng() * 0.3);
       group.add(rubble);
     }
-  } else if (env === "surreal") {
+  } else if (effectiveEnv === "surreal") {
     const mat = new THREE.MeshStandardMaterial({
       color: 0x8a6aa0, roughness: 0.2,
       emissive: new THREE.Color(0x4a2a6a), emissiveIntensity: 0.2,
@@ -3830,10 +4183,47 @@ function createGroundDetail(rng: () => number, env: EnvironmentType, sm: number)
   return group;
 }
 
-function createMidLayerFiller(rng: () => number, env: EnvironmentType, sm: number): THREE.Group {
+function createMidLayerFiller(rng: () => number, env: EnvironmentType, sm: number, scene?: SceneType): THREE.Group {
   const group = new THREE.Group();
+  const effectiveEnv = scene ? sceneToGroundEnv(scene, env) : env;
 
-  if (env === "city") {
+  // 18I: Coastal/beach filler — palm trees, sand ripples
+  if (effectiveEnv === "coastal" || scene === "beach") {
+    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x7a5a2a, roughness: 0.85 });
+    const leafMat = new THREE.MeshStandardMaterial({ color: 0x2a7a2a, roughness: 0.7 });
+    const palmCount = 1 + Math.floor(rng() * 3);
+    for (let pi = 0; pi < palmCount; pi++) {
+      const trunkH = (4 + rng() * 4) * sm;
+      const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.25, trunkH, 7), trunkMat);
+      trunk.rotation.z = (rng() - 0.5) * 0.3;
+      trunk.position.set((rng() - 0.5) * 18, trunkH / 2, (rng() - 0.5) * 18);
+      trunk.castShadow = true;
+      group.add(trunk);
+      const frondCount = 4 + Math.floor(rng() * 3);
+      for (let fi = 0; fi < frondCount; fi++) {
+        const fa = (fi / frondCount) * Math.PI * 2;
+        const frond = new THREE.Mesh(new THREE.SphereGeometry(0.9 + rng() * 0.5, 7, 5), leafMat);
+        frond.scale.y = 0.28;
+        frond.position.set(
+          trunk.position.x + Math.cos(fa) * 1.8,
+          trunkH + 0.5,
+          trunk.position.z + Math.sin(fa) * 1.8
+        );
+        group.add(frond);
+      }
+    }
+    const rippleMat = new THREE.MeshStandardMaterial({ color: 0xc8a860, roughness: 0.98, transparent: true, opacity: 0.6 });
+    for (let ri = 0; ri < 3; ri++) {
+      const rR = (1.5 + rng() * 2) * sm;
+      const ripple = new THREE.Mesh(new THREE.CircleGeometry(rR, 8), rippleMat);
+      ripple.rotation.x = -Math.PI / 2;
+      ripple.position.set((rng() - 0.5) * 16, 0.02, (rng() - 0.5) * 16);
+      group.add(ripple);
+    }
+    return group;
+  }
+
+  if (effectiveEnv === "city") {
     const count = 2 + Math.floor(rng() * 3);
     const mat = new THREE.MeshStandardMaterial({
       color: [0x3a3f48, 0x2e3540, 0x454d5a][Math.floor(rng() * 3)],
@@ -3848,13 +4238,39 @@ function createMidLayerFiller(rng: () => number, env: EnvironmentType, sm: numbe
       building.castShadow = true;
       building.receiveShadow = true;
       group.add(building);
+      // 18B: Emissive window dots — brighter and more frequent for city nights
+      if (activeSceneType === "city" && rng() < 0.85) {
+        const isNight = activeSemantics?.time === "night";
+        const isSunset = activeSemantics?.time === "sunset";
+        const nightBoost = (isNight || isSunset) ? 1.2 : 0.7;
+        const winColor = rng() < 0.5 ? 0xffcc66 : rng() < 0.5 ? 0x99ddff : 0xffeebb;
+        const winMat = new THREE.MeshStandardMaterial({
+          color: winColor, emissive: new THREE.Color(winColor),
+          emissiveIntensity: 0.85 * nightBoost, roughness: 0.15
+        });
+        const winCount = 4 + Math.floor(rng() * 6);
+        for (let wi = 0; wi < winCount; wi++) {
+          const win = new THREE.Mesh(new THREE.PlaneGeometry(0.4 * sm, 0.3 * sm), winMat);
+          const face = Math.floor(rng() * 4);
+          const faceAngle = (face / 4) * Math.PI * 2;
+          win.position.set(
+            building.position.x + Math.cos(faceAngle) * (w / 2 + 0.02),
+            building.position.y - h / 2 + 1 + rng() * (h - 2),
+            building.position.z + Math.sin(faceAngle) * (w / 2 + 0.02)
+          );
+          win.rotation.y = faceAngle;
+          group.add(win);
+          cityEmissives.push({ material: winMat, base: 0.85 * nightBoost, phase: rng() * Math.PI * 2 });
+        }
+      }
     }
-  } else if (env === "forest") {
+  } else if (effectiveEnv === "forest") {
     const count = 3 + Math.floor(rng() * 5);
     const trunkMat = new THREE.MeshStandardMaterial({ color: 0x4a3520, roughness: 0.9 });
-    const leafMat = new THREE.MeshStandardMaterial({ color: 0x1a4a2a, roughness: 0.7 });
+    const leafColors = [0x1a4a2a, 0x1e5a2e, 0x2a5a22, 0x1a3a28];
     for (let i = 0; i < count; i++) {
-      const trunkH = (SCALE.trunkH.min + rng() * (SCALE.trunkH.max - SCALE.trunkH.min)) * sm;
+      const leafMat = new THREE.MeshStandardMaterial({ color: leafColors[i % leafColors.length], roughness: 0.7 });
+      const trunkH = (SCALE.trunkH.min + rng() * (SCALE.trunkH.max - SCALE.trunkH.min)) * sm * (0.8 + rng() * 0.6);
       const trunkR = (0.2 + rng() * 0.15) * sm;
       const trunk = new THREE.Mesh(new THREE.CylinderGeometry(trunkR * 0.65, trunkR, trunkH, 8), trunkMat);
       trunk.position.set((rng() - 0.5) * 20, trunkH / 2, (rng() - 0.5) * 20);
@@ -3866,7 +4282,16 @@ function createMidLayerFiller(rng: () => number, env: EnvironmentType, sm: numbe
       crown.castShadow = true;
       group.add(crown);
     }
-  } else if (env === "ocean") {
+    // 18B: Undergrowth ferns beneath trees
+    const fernMat = new THREE.MeshStandardMaterial({ color: 0x2a5a22, roughness: 0.85, side: THREE.DoubleSide });
+    for (let fi = 0; fi < 4; fi++) {
+      const fernH = (0.4 + rng() * 0.6) * sm;
+      const fern = new THREE.Mesh(new THREE.PlaneGeometry(0.8 * sm, fernH), fernMat);
+      fern.position.set((rng() - 0.5) * 16, fernH / 2, (rng() - 0.5) * 16);
+      fern.rotation.y = rng() * Math.PI;
+      group.add(fern);
+    }
+  } else if (effectiveEnv === "ocean") {
     const mat = new THREE.MeshStandardMaterial({ color: 0x5a6570, roughness: 0.85 });
     const count = 2 + Math.floor(rng() * 3);
     for (let i = 0; i < count; i++) {
@@ -3877,7 +4302,7 @@ function createMidLayerFiller(rng: () => number, env: EnvironmentType, sm: numbe
       rock.castShadow = true;
       group.add(rock);
     }
-  } else if (env === "mountain") {
+  } else if (effectiveEnv === "mountain") {
     const count = 1 + Math.floor(rng() * 2);
     for (let i = 0; i < count; i++) {
       const h = (8 + rng() * 15) * sm;
@@ -3890,7 +4315,7 @@ function createMidLayerFiller(rng: () => number, env: EnvironmentType, sm: numbe
       peak.castShadow = true;
       group.add(peak);
     }
-  } else if (env === "desert") {
+  } else if (effectiveEnv === "desert") {
     const mat = new THREE.MeshStandardMaterial({ color: 0xc2a66b, roughness: 0.85 });
     const count = 1 + Math.floor(rng() * 3);
     for (let i = 0; i < count; i++) {
@@ -3901,7 +4326,7 @@ function createMidLayerFiller(rng: () => number, env: EnvironmentType, sm: numbe
       pillar.castShadow = true;
       group.add(pillar);
     }
-  } else if (env === "sky") {
+  } else if (effectiveEnv === "sky") {
     const mat = new THREE.MeshStandardMaterial({ color: 0xe0e4ea, roughness: 0.9, transparent: true, opacity: 0.7 });
     const count = 2 + Math.floor(rng() * 3);
     for (let i = 0; i < count; i++) {
@@ -3911,19 +4336,7 @@ function createMidLayerFiller(rng: () => number, env: EnvironmentType, sm: numbe
       cloud.position.set((rng() - 0.5) * 40, rng() * 15, (rng() - 0.5) * 40);
       group.add(cloud);
     }
-  } else if (env === "coastal") {
-    const count = 2 + Math.floor(rng() * 3);
-    const driftMat = new THREE.MeshStandardMaterial({ color: 0x8a7a5a, roughness: 0.9 });
-    for (let i = 0; i < count; i++) {
-      const h = (1 + rng() * 3) * sm;
-      const r = (0.3 + rng() * 0.8) * sm;
-      const drift = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.3, r, h, 6), driftMat);
-      drift.position.set((rng() - 0.5) * 20, h / 2, (rng() - 0.5) * 20);
-      drift.rotation.z = (rng() - 0.5) * 0.4;
-      drift.castShadow = true;
-      group.add(drift);
-    }
-  } else if (env === "cave") {
+  } else if (effectiveEnv === "cave") {
     const darkRock = new THREE.MeshStandardMaterial({ color: 0x3a3a3e, roughness: 0.9 });
     const count = 2 + Math.floor(rng() * 3);
     for (let i = 0; i < count; i++) {
@@ -3934,7 +4347,7 @@ function createMidLayerFiller(rng: () => number, env: EnvironmentType, sm: numbe
       stalagmite.castShadow = true;
       group.add(stalagmite);
     }
-  } else if (env === "frozen") {
+  } else if (effectiveEnv === "frozen") {
     const iceMat = new THREE.MeshStandardMaterial({ color: 0xb8d8e8, roughness: 0.05, transparent: true, opacity: 0.7 });
     const count = 2 + Math.floor(rng() * 3);
     for (let i = 0; i < count; i++) {
@@ -3946,7 +4359,7 @@ function createMidLayerFiller(rng: () => number, env: EnvironmentType, sm: numbe
       block.castShadow = true;
       group.add(block);
     }
-  } else if (env === "ruins") {
+  } else if (effectiveEnv === "ruins") {
     const ruinMat = new THREE.MeshStandardMaterial({ color: 0x7a7568, roughness: 0.85 });
     const count = 3 + Math.floor(rng() * 4);
     for (let i = 0; i < count; i++) {
@@ -3959,11 +4372,11 @@ function createMidLayerFiller(rng: () => number, env: EnvironmentType, sm: numbe
       wall.castShadow = true;
       group.add(wall);
     }
-  } else if (env === "surreal" || env === "celestial") {
+  } else if (effectiveEnv === "surreal" || effectiveEnv === "celestial") {
     const glowMat = new THREE.MeshStandardMaterial({
-      color: env === "surreal" ? 0x8a6aa0 : 0x88aadd,
+      color: effectiveEnv === "surreal" ? 0x8a6aa0 : 0x88aadd,
       roughness: 0.2, metalness: 0.3,
-      emissive: new THREE.Color(env === "surreal" ? 0x4a2a6a : 0x4466aa),
+      emissive: new THREE.Color(effectiveEnv === "surreal" ? 0x4a2a6a : 0x4466aa),
       emissiveIntensity: 0.3, transparent: true, opacity: 0.6
     });
     const count = 2 + Math.floor(rng() * 3);
@@ -3978,7 +4391,7 @@ function createMidLayerFiller(rng: () => number, env: EnvironmentType, sm: numbe
       mesh.castShadow = true;
       group.add(mesh);
     }
-  } else if (env === "storm") {
+  } else if (effectiveEnv === "storm") {
     // Dark windswept debris
     const mat = new THREE.MeshStandardMaterial({ color: 0x3a4a50, roughness: 0.8 });
     const count = 2 + Math.floor(rng() * 3);
@@ -4079,12 +4492,53 @@ function createUpperLayerElement(rng: () => number, env: EnvironmentType, sm: nu
   return group;
 }
 
-function createBackgroundSilhouette(rng: () => number, env: EnvironmentType, sm: number): THREE.Group {
+function createBackgroundSilhouette(rng: () => number, env: EnvironmentType, sm: number, scene?: SceneType): THREE.Group {
   const group = new THREE.Group();
   const mat = new THREE.MeshBasicMaterial({ color: 0x1a1e28, fog: true });
+  const effectiveEnv = scene ? sceneToGroundEnv(scene, env) : env;
+
+  // 18I: Beach/coastal scenes get coastal background (no random mountains)
+  if (scene === "beach" || effectiveEnv === "coastal" || effectiveEnv === "ocean") {
+    // Distant water horizon haze + optional far city silhouette
+    const cloudMat = new THREE.MeshBasicMaterial({ color: 0x2a3e5a, fog: true, transparent: true, opacity: 0.4 });
+    const count = 2 + Math.floor(rng() * 3);
+    for (let i = 0; i < count; i++) {
+      const r = (18 + rng() * 30) * sm;
+      const cloud = new THREE.Mesh(new THREE.SphereGeometry(r, 8, 6), cloudMat);
+      cloud.scale.y = 0.12;
+      cloud.position.set((rng() - 0.5) * 60, 12 + rng() * 10, (rng() - 0.5) * 30);
+      group.add(cloud);
+    }
+    // Far city on horizon (beach by city)
+    if (rng() < 0.5) {
+      const bldCount = 3 + Math.floor(rng() * 4);
+      for (let bi = 0; bi < bldCount; bi++) {
+        const w = (2 + rng() * 4) * sm;
+        const h = (8 + rng() * 25) * sm;
+        const building = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), mat);
+        building.position.set((rng() - 0.5) * 50, h / 2, (rng() - 0.5) * 15);
+        group.add(building);
+      }
+    }
+    return group;
+  }
+
+  // 18I: Forest scenes get tree-line silhouettes, not mountains
+  if (scene === "forest" || effectiveEnv === "forest") {
+    const count = 4 + Math.floor(rng() * 5);
+    for (let i = 0; i < count; i++) {
+      const h = (18 + rng() * 30) * sm;
+      const r = (6 + rng() * 10) * sm;
+      const treeMat = new THREE.MeshBasicMaterial({ color: 0x0a1a0a, fog: true });
+      const tree = new THREE.Mesh(new THREE.ConeGeometry(r, h, 8), treeMat);
+      tree.position.set((rng() - 0.5) * 60, h / 2, (rng() - 0.5) * 30);
+      group.add(tree);
+    }
+    return group;
+  }
 
   const roll = rng();
-  if (roll < 0.3 || env === "mountain") {
+  if (roll < 0.3 || effectiveEnv === "mountain") {
     // Distant mountain range
     const count = 3 + Math.floor(rng() * 4);
     for (let i = 0; i < count; i++) {
@@ -4094,7 +4548,7 @@ function createBackgroundSilhouette(rng: () => number, env: EnvironmentType, sm:
       peak.position.set((rng() - 0.5) * 60, h / 2, (rng() - 0.5) * 40);
       group.add(peak);
     }
-  } else if (roll < 0.6 || env === "city") {
+  } else if (roll < 0.6 || effectiveEnv === "city") {
     // Distant city skyline
     const count = 6 + Math.floor(rng() * 8);
     for (let i = 0; i < count; i++) {
@@ -4113,10 +4567,10 @@ function createBackgroundSilhouette(rng: () => number, env: EnvironmentType, sm:
       spire.position.set((rng() - 0.5) * 50, h / 2, (rng() - 0.5) * 30);
       group.add(spire);
     }
-  } else if (roll < 0.8 && (env === "frozen" || env === "cave" || env === "ruins")) {
+  } else if (roll < 0.8 && (effectiveEnv === "frozen" || effectiveEnv === "cave" || effectiveEnv === "ruins")) {
     // Distant dark formations
     const count = 3 + Math.floor(rng() * 4);
-    const color = env === "frozen" ? 0x1a2a3a : env === "cave" ? 0x121218 : 0x2a2520;
+    const color = effectiveEnv === "frozen" ? 0x1a2a3a : effectiveEnv === "cave" ? 0x121218 : 0x2a2520;
     const darkMat = new THREE.MeshBasicMaterial({ color, fog: true });
     for (let i = 0; i < count; i++) {
       const h = (15 + rng() * 40) * sm;
@@ -4125,7 +4579,7 @@ function createBackgroundSilhouette(rng: () => number, env: EnvironmentType, sm:
       form.position.set((rng() - 0.5) * 60, h / 2, (rng() - 0.5) * 40);
       group.add(form);
     }
-  } else if (env === "surreal" || env === "celestial") {
+  } else if (effectiveEnv === "surreal" || effectiveEnv === "celestial") {
     // Floating abstract silhouettes
     const count = 3 + Math.floor(rng() * 4);
     const surrMat = new THREE.MeshBasicMaterial({ color: 0x1a1030, fog: true, transparent: true, opacity: 0.6 });
@@ -4169,8 +4623,12 @@ function applyVisualHierarchy(
     if (!group) continue;
 
     if (entity.landmarkRole === "primary_landmark") {
-      // Scale up primary landmark to be clearly dominant
-      group.scale.multiplyScalar(1.35);
+      // 20D: Enforce minimum landmark size — if too small, scale up aggressively
+      const bbox = new THREE.Box3().setFromObject(group);
+      const bboxSize = bbox.getSize(new THREE.Vector3());
+      const maxDim = Math.max(bboxSize.x, bboxSize.y, bboxSize.z);
+      const minBoost = maxDim < 3 ? 2.5 : maxDim < 6 ? 1.8 : 1.35;
+      group.scale.multiplyScalar(minBoost);
 
       // Add strong emissive glow to all meshes
       group.traverse((obj: THREE.Object3D) => {
@@ -4568,6 +5026,28 @@ function buildForestRuins(
     );
     sil.position.set(Math.cos(angle) * dist, h / 2, Math.sin(angle) * dist);
     worldGroup.add(sil);
+  }
+
+  // 18B: Forest fog pockets — low-lying mist spheres near tree clusters
+  const fogPocketCount = 5 + Math.floor(rng() * 4);
+  for (let i = 0; i < fogPocketCount; i++) {
+    const fogR = (4 + rng() * 6) * sm;
+    const fogMat = new THREE.MeshStandardMaterial({
+      color: 0xd8eaee,
+      transparent: true,
+      opacity: 0.06 + rng() * 0.08,
+      roughness: 1.0,
+      depthWrite: false,
+      side: THREE.FrontSide,
+    });
+    const fog = new THREE.Mesh(new THREE.SphereGeometry(fogR, 8, 8), fogMat);
+    fog.position.set(
+      (rng() - 0.5) * 55,
+      0.5 + rng() * 1.5,
+      (rng() - 0.5) * 55
+    );
+    fog.scale.set(1, 0.35, 1); // flat pancake shape hugging ground
+    worldGroup.add(fog);
   }
 }
 
@@ -5370,11 +5850,19 @@ function createStarfield(seedText: string, count: number, radius: number): THREE
 
 // ── 16B: Session variation counter — same dream varies slightly on re-gen ────
 let sessionVariation = 0;
+let variationEnabled = true; // 18H: Toggle for stable vs varied dreams
+
+export function setVariationEnabled(enabled: boolean): void {
+  variationEnabled = enabled;
+}
+export function getVariationEnabled(): boolean {
+  return variationEnabled;
+}
 
 function seededRandom(text: string): () => number {
   let hash = 2166136261;
   // Mix session variation so the same dream text produces different placement
-  const salted = text + "|v" + sessionVariation;
+  const salted = variationEnabled ? text + "|v" + sessionVariation : text;
   for (let i = 0; i < salted.length; i += 1) {
     hash ^= salted.charCodeAt(i);
     hash = Math.imul(hash, 16777619);
@@ -5441,12 +5929,11 @@ interface SkyProfile {
 function resolveSkyProfile(world: WorldModel): SkyProfile {
   const names = new Set(world.entities.map((e) => e.attributes.name));
   const sem = world.semantics;
+  const scene = world.sceneType ?? "generic";
 
   const stormCues = ["storm", "stormy", "thunder"];
-  const surrealCues = [
-    "glowing", "mystical", "surreal", "dreamlike", "ethereal",
-    "magical", "enchanted", "spectral", "luminous", "cosmic"
-  ];
+  // 17G: Narrowed surreal triggers — only explicit surreal keywords, not mood
+  const surrealCues = ["surreal", "kaleidoscopic", "inverted", "mirrored", "prismatic"];
   const nightCues = ["moon", "stars", "night", "space", "dark", "starry"];
   const sunsetCues = ["sunset", "dusk", "purple", "golden"];
   const rainCues = ["rain", "rainy"];
@@ -5456,10 +5943,24 @@ function resolveSkyProfile(world: WorldModel): SkyProfile {
   const weather: string[] = [];
   const celestial: string[] = [];
 
+  // 17G: Scene-type-driven sky defaults (applied BEFORE cue overrides)
+  switch (scene) {
+    case "beach": mode = Math.random() < 0.5 ? "day" : "sunset"; break;
+    case "cave": mode = "night"; break;
+    case "ocean": mode = Math.random() < 0.4 ? "sunset" : "day"; break;
+    case "frozen": mode = Math.random() < 0.3 ? "storm" : "day"; break;
+    case "desert": mode = Math.random() < 0.4 ? "sunset" : "day"; break;
+    case "surreal": mode = "surreal"; break;
+    case "forest": mode = "day"; break;
+    case "city": mode = Math.random() < 0.3 ? "night" : Math.random() < 0.5 ? "sunset" : "day"; break;
+    default: break; // "day" baseline
+  }
+
+  // Explicit cues can override scene defaults
   if (stormCues.some((c) => names.has(c)) || sem.weather === "storm") {
     mode = "storm";
     weather.push("rain", "thunder");
-  } else if (surrealCues.some((c) => names.has(c)) || sem.mood === "mystical" || sem.mood === "dreamlike") {
+  } else if (surrealCues.some((c) => names.has(c)) || sem.surreality === "extreme") {
     mode = "surreal";
     celestial.push("stars");
   } else if (nightCues.some((c) => names.has(c)) || sem.time === "night") {
@@ -5469,7 +5970,16 @@ function resolveSkyProfile(world: WorldModel): SkyProfile {
     mode = "sunset";
     celestial.push("sun");
   } else {
-    celestial.push("sun");
+    // Keep scene-derived mode; add appropriate celestial bodies
+    if (mode === "night") {
+      celestial.push("stars", "moon");
+    } else if (mode === "sunset") {
+      celestial.push("sun");
+    } else if (mode === "surreal") {
+      celestial.push("stars");
+    } else {
+      celestial.push("sun");
+    }
   }
 
   if ((rainCues.some((c) => names.has(c)) || sem.weather === "rain") && !weather.includes("rain")) {
@@ -5498,7 +6008,24 @@ function applySkyProfile(
     skyDome.geometry.dispose();
     (skyDome.material as THREE.Material).dispose();
   }
-  const [skyTop, skyBottom] = SKY_COLORS[profile.mode];
+  // 17G: Scene-aware sky color tinting for variety
+  let [skyTop, skyBottom] = SKY_COLORS[profile.mode];
+  if (profile.mode === "day") {
+    // Vary the day sky per scene type
+    switch (activeSceneType) {
+      case "beach": skyTop = 0x4a8af0; skyBottom = 0xd0e8ff; break;  // brighter blue
+      case "forest": skyTop = 0x2a5a90; skyBottom = 0x8ab8d8; break; // muted green-blue
+      case "desert": skyTop = 0x5a8ac0; skyBottom = 0xe8d8b0; break; // warm haze
+      case "mountain": skyTop = 0x3070c0; skyBottom = 0xa0c4e8; break; // crisp blue
+      case "frozen": skyTop = 0x4a6a90; skyBottom = 0xc8d8e8; break;  // pale cold
+    }
+  } else if (profile.mode === "sunset") {
+    switch (activeSceneType) {
+      case "beach": skyTop = 0x1a0830; skyBottom = 0xd08040; break;   // warm golden
+      case "desert": skyTop = 0x2a1020; skyBottom = 0xc86030; break;  // deep orange
+      case "ocean": skyTop = 0x1a1040; skyBottom = 0xb07050; break;   // dusky purple-orange
+    }
+  }
   skyDome = createSkyDome(500, skyTop, skyBottom);
   scene.add(skyDome);
 
@@ -5520,7 +6047,7 @@ function applySkyProfile(
     }
   }
 
-  // Lighting
+  // Lighting (base mode values)
   if (ambientLight) ambientLight.intensity = AMBIENT_INT[profile.mode];
   if (directionalLight) {
     directionalLight.intensity = DIR_INT[profile.mode];
@@ -5537,6 +6064,25 @@ function applySkyProfile(
   }
   if (fillLight) fillLight.intensity = profile.mode === "day" ? 0.4 : 0.2;
   if (rimLight) rimLight.intensity = profile.mode === "surreal" ? 0.5 : 0.3;
+
+  // 18G/19I: Scene-specific lighting adjustments (AFTER base mode values)
+  switch (activeSceneType) {
+    case "cave":
+      if (ambientLight) ambientLight.intensity *= 0.55;
+      if (directionalLight) directionalLight.intensity *= 0.4;
+      if (fillLight) fillLight.intensity *= 0.5;
+      break;
+    case "beach":
+      if (directionalLight) directionalLight.intensity *= 1.15;
+      if (fillLight) fillLight.intensity += 0.1;
+      break;
+    case "temple":
+      if (rimLight) { rimLight.color.setHex(0xffcc88); rimLight.intensity = 0.35; }
+      break;
+    case "frozen":
+      if (fillLight) fillLight.color.setHex(0xc0d8f0);
+      break;
+  }
   if (hemiLight) {
     const HEMI: Record<SkyMode, [number, number, number]> = {
       day: [0x87ceeb, 0x362a1a, 0.45],
@@ -5659,33 +6205,35 @@ let weatherWindDir = new THREE.Vector2(1, 0);
 let weatherWindStrength = 0;
 
 function createRainSystem(rng: () => number): THREE.Points {
-  const count = 600;
+  // 20B: More particles, wider spread, full vertical coverage (above flight to ground)
+  const count = 900;
   const positions = new Float32Array(count * 3);
-  const spread = 80;
+  const spread = 160;
   for (let i = 0; i < count; i += 1) {
     positions[i * 3] = (rng() - 0.5) * spread;
-    positions[i * 3 + 1] = rng() * 25;
+    positions[i * 3 + 1] = rng() * 70 - 5; // -5 to +65 — covers ground to above flight height
     positions[i * 3 + 2] = (rng() - 0.5) * spread;
   }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
   const mat = new THREE.PointsMaterial({
     color: 0xaabbdd,
-    size: 0.15,
+    size: 0.18,
     transparent: true,
-    opacity: 0.5,
+    opacity: 0.55,
     depthWrite: false
   });
   return new THREE.Points(geo, mat);
 }
 
 function createSnowSystem(rng: () => number): THREE.Points {
-  const count = 350;
+  // 20B: More particles, wider spread, full vertical coverage
+  const count = 500;
   const positions = new Float32Array(count * 3);
-  const spread = 80;
+  const spread = 160;
   for (let i = 0; i < count; i += 1) {
     positions[i * 3] = (rng() - 0.5) * spread;
-    positions[i * 3 + 1] = rng() * 20;
+    positions[i * 3 + 1] = rng() * 60 - 3; // -3 to +57 — snow touches ground
     positions[i * 3 + 2] = (rng() - 0.5) * spread;
   }
   const geo = new THREE.BufferGeometry();
@@ -5701,7 +6249,8 @@ function createSnowSystem(rng: () => number): THREE.Points {
 }
 
 function updateWeather(dt: number): void {
-  const halfSpread = 40;
+  // 20B: Weather covers full scene — wide spread matched to init spread
+  const halfSpread = 80;
 
   // ── Rain: follows player, driven by wind ──────────────────────────
   if (weatherRain) {
@@ -5709,12 +6258,28 @@ function updateWeather(dt: number): void {
     const pos = weatherRain.geometry.attributes.position as THREE.BufferAttribute;
     const arr = pos.array as Float32Array;
     for (let i = 0; i < pos.count; i += 1) {
-      arr[i * 3 + 1] -= dt * 14;
+      arr[i * 3 + 1] -= dt * 16; // slightly faster fall for visibility
       // Wind drift
       arr[i * 3]     += weatherWindDir.x * weatherWindStrength * dt * 3;
       arr[i * 3 + 2] += weatherWindDir.y * weatherWindStrength * dt * 3;
-      // Wrap vertically
-      if (arr[i * 3 + 1] < -1) arr[i * 3 + 1] = 22 + Math.random() * 5;
+      // 20B: Rain reaches ground (y = groundBaseY - 2) then recycles high
+      if (arr[i * 3 + 1] < groundBaseY - 2) {
+        // 20B: Spawn splash ring at impact point
+        if (scene && rainSplashes.length < RAIN_SPLASH_MAX && Math.random() < 0.15) {
+          const splash = new THREE.Mesh(rainSplashGeo, rainSplashMat.clone());
+          splash.rotation.x = -Math.PI / 2;
+          const wx = playerPos.x + arr[i * 3];
+          const wz = playerPos.z + arr[i * 3 + 2];
+          splash.position.set(wx, groundBaseY + 0.05, wz);
+          splash.scale.set(0.5, 0.5, 0.5);
+          scene.add(splash);
+          rainSplashes.push({ mesh: splash, timer: 0.35 });
+        }
+        arr[i * 3 + 1] = 55 + Math.random() * 15;
+        // Redistribute horizontally on recycle for even coverage
+        arr[i * 3] = (Math.random() - 0.5) * halfSpread * 2;
+        arr[i * 3 + 2] = (Math.random() - 0.5) * halfSpread * 2;
+      }
       // Wrap horizontally around player
       if (arr[i * 3] > halfSpread) arr[i * 3] -= halfSpread * 2;
       if (arr[i * 3] < -halfSpread) arr[i * 3] += halfSpread * 2;
@@ -5722,6 +6287,20 @@ function updateWeather(dt: number): void {
       if (arr[i * 3 + 2] < -halfSpread) arr[i * 3 + 2] += halfSpread * 2;
     }
     pos.needsUpdate = true;
+
+    // 20B: Update rain splashes — expand and fade
+    for (let si = rainSplashes.length - 1; si >= 0; si--) {
+      const sp = rainSplashes[si];
+      sp.timer -= dt;
+      const progress = 1 - sp.timer / 0.35;
+      sp.mesh.scale.setScalar(0.5 + progress * 1.5);
+      (sp.mesh.material as THREE.MeshBasicMaterial).opacity = 0.45 * (1 - progress);
+      if (sp.timer <= 0) {
+        sp.mesh.parent?.remove(sp.mesh);
+        (sp.mesh.material as THREE.Material).dispose();
+        rainSplashes.splice(si, 1);
+      }
+    }
   }
 
   // ── Snow: follows player, gentle wind + sine sway ─────────────────
@@ -5735,9 +6314,14 @@ function updateWeather(dt: number): void {
     const gustHoriz = snowGustActive ? 2.5 : 1.0;
     for (let i = 0; i < pos.count; i += 1) {
       arr[i * 3 + 1] -= dt * 1.5 * gustMult;
-      arr[i * 3] += (Math.sin(time + i * 0.5) * dt * 0.3 + weatherWindDir.x * weatherWindStrength * dt) * gustHoriz;
-      arr[i * 3 + 2] += weatherWindDir.y * weatherWindStrength * dt * gustHoriz;
-      if (arr[i * 3 + 1] < -1) arr[i * 3 + 1] = 16 + Math.random() * 4;
+      arr[i * 3] += (Math.sin(time + i * 0.5) * dt * 0.5 + weatherWindDir.x * weatherWindStrength * dt) * gustHoriz;
+      arr[i * 3 + 2] += (Math.cos(time * 0.7 + i * 0.3) * dt * 0.3 + weatherWindDir.y * weatherWindStrength * dt) * gustHoriz;
+      // 20B: Snow reaches ground then recycles
+      if (arr[i * 3 + 1] < groundBaseY - 1) {
+        arr[i * 3 + 1] = 48 + Math.random() * 12;
+        arr[i * 3] = (Math.random() - 0.5) * halfSpread * 2;
+        arr[i * 3 + 2] = (Math.random() - 0.5) * halfSpread * 2;
+      }
       if (arr[i * 3] > halfSpread) arr[i * 3] -= halfSpread * 2;
       if (arr[i * 3] < -halfSpread) arr[i * 3] += halfSpread * 2;
       if (arr[i * 3 + 2] > halfSpread) arr[i * 3 + 2] -= halfSpread * 2;
@@ -6097,24 +6681,26 @@ function smoothstep(t: number): number {
 export function startCinematicIntro(onComplete?: () => void): void {
   if (!camera) { onComplete?.(); return; }
 
-  // Start position: high above and slightly behind the spawn
+  // 18A: Cinematic sweep — start from a lateral elevated angle
+  //   so the camera sweeps across the scene before settling at player spawn.
+  const sideAngle = yaw + Math.PI * 0.55 + (Math.random() < 0.5 ? 1 : -1) * 0.3;
+  const startDist = 35 + Math.random() * 20;
+  const startHeight = 40 + Math.random() * 18;
   const high = new THREE.Vector3(
-    playerPos.x - Math.sin(yaw) * 15,
-    45 + Math.random() * 15,
-    playerPos.z - Math.cos(yaw) * 15
+    playerPos.x + Math.sin(sideAngle) * startDist,
+    startHeight,
+    playerPos.z + Math.cos(sideAngle) * startDist
   );
 
   cinematic.active = true;
   cinematic.startTime = performance.now() / 1000;
-  cinematic.duration = 3;
+  cinematic.duration = 4.5; // 18A: extended from 3 for premium feel
   cinematic.startPos.copy(high);
-  cinematic.endPos.set(playerPos.x, PLAYER_EYE_HEIGHT, playerPos.z);
-  // Look toward primary landmark / composition center
-  cinematic.lookTarget.set(
-    playerPos.x - Math.sin(yaw) * 10,
-    PLAYER_EYE_HEIGHT,
-    playerPos.z - Math.cos(yaw) * 10
-  );
+  // 20A: End at actual player position (elevated if flight-first)
+  cinematic.endPos.set(playerPos.x, playerPos.y + PLAYER_EYE_HEIGHT, playerPos.z);
+  // 18A: Look toward primary landmark during cinematic sweep so the world reads beautifully
+  const landlmarkLook = primaryLandmarkWorldPos ?? new THREE.Vector3(0, 2, 0);
+  cinematic.lookTarget.set(landlmarkLook.x, Math.max(landlmarkLook.y, 2), landlmarkLook.z);
   cinematic.onComplete = onComplete ?? null;
 
   // Position camera at start
@@ -6145,15 +6731,15 @@ function updateCinematic(dt: number): boolean {
 
   const t = smoothstep(rawT);
 
-  // Interpolate position
+  // 18A: Interpolate position with a graceful arc
   camera.position.lerpVectors(cinematic.startPos, cinematic.endPos, t);
 
-  // Slight arc: lift the midpoint for a sweeping feel
-  const arc = Math.sin(rawT * Math.PI) * 8;
-  camera.position.y += arc;
+  // 18A: Arc peaks in the first half, giving a swoop-down feel
+  const arc = Math.sin(rawT * Math.PI) * 12;
+  camera.position.y += arc * (1 - t * 0.5);
 
-  // Slight rotation — slow pan to look target
-  const lookY = cinematic.lookTarget.y + (1 - t) * 6;
+  // 18A: Look target descends gradually from 10 units up to ground
+  const lookY = cinematic.lookTarget.y + (1 - t) * 10;
   camera.lookAt(cinematic.lookTarget.x, lookY, cinematic.lookTarget.z);
 
   return true;
@@ -6168,7 +6754,8 @@ export function isCinematicActive(): boolean {
 export function resetPlayerPosition(): void {
   playerPos.copy(playerSpawnPos);
   playerVelY = 0;
-  if (flightActive) flightActive = false;
+  // 20A: Keep flight active on reset — flight is default mode
+  if (currentPower === "flight") flightActive = true;
   if (camera) {
     camera.position.set(playerPos.x, playerPos.y + PLAYER_EYE_HEIGHT, playerPos.z);
     syncAnglesToCamera();
@@ -7065,6 +7652,46 @@ function createCreatureGroup(rng: () => number): THREE.Group {
   return group;
 }
 
+// ── 18C: Turtle living entity — for beach/ocean scenes ───────────────
+function createTurtleGroup(rng: () => number): THREE.Group {
+  const group = new THREE.Group();
+  const shellColor = [0x4a6a3a, 0x3a5a2a, 0x5a7040, 0x2a4a2a][Math.floor(rng() * 4)];
+  const skinColor = 0x6a8050;
+  const shellMat = new THREE.MeshStandardMaterial({ color: shellColor, roughness: 0.85 });
+  const skinMat = new THREE.MeshStandardMaterial({ color: skinColor, roughness: 0.9 });
+  // Shell dome
+  const shell = new THREE.Mesh(new THREE.SphereGeometry(0.55, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.6), shellMat);
+  shell.scale.y = 0.62;
+  shell.position.y = 0.22;
+  shell.castShadow = true;
+  group.add(shell);
+  // Shell underside (flat)
+  const belly = new THREE.Mesh(new THREE.CircleGeometry(0.5, 10), skinMat);
+  belly.rotation.x = Math.PI / 2;
+  belly.position.y = 0.14;
+  group.add(belly);
+  // Head
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 8), skinMat);
+  head.position.set(0.55, 0.22, 0);
+  head.castShadow = true;
+  group.add(head);
+  // Four flippers
+  for (const [fx, fz] of [[0.3, 0.45], [0.3, -0.45], [-0.3, 0.45], [-0.3, -0.45]]) {
+    const flipper = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.06, 0.18), skinMat);
+    flipper.position.set(fx, 0.12, fz);
+    flipper.rotation.y = fz > 0 ? -0.3 : 0.3;
+    group.add(flipper);
+  }
+  // Tail
+  const tail = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.18, 5), skinMat);
+  tail.rotation.z = -Math.PI / 2;
+  tail.position.set(-0.6, 0.18, 0);
+  group.add(tail);
+  group.rotation.y = rng() * Math.PI * 2;
+  group.userData.livingPresence = "turtle";
+  return group;
+}
+
 // ── 16C: Living presence arrays for density population ───────────────
 const livingPresenceCreators = [createHumanoidGroup, createAnimalGroup, createCreatureGroup];
 
@@ -7370,30 +7997,103 @@ function createTowerGroup(rng: () => number): THREE.Group {
 
 function createBeachGroup(rng: () => number): THREE.Group {
   const group = new THREE.Group();
+  // 18B: Wider, more beach-like platform with layered shoreline
   const mesh = new THREE.Mesh(
-    new THREE.BoxGeometry(SCALE.beachW, 0.3, SCALE.beachD),
+    new THREE.BoxGeometry(SCALE.beachW * 1.6, 0.3, SCALE.beachD * 1.4),
     new THREE.MeshStandardMaterial({
-      color: 0xd6c28a,
-      roughness: 0.95,
-      metalness: 0.02
+      color: 0xd4bb7a,
+      roughness: 0.97,
+      metalness: 0.01
     })
   );
   mesh.castShadow = false;
   mesh.receiveShadow = true;
   group.add(mesh);
 
+  // 18B: Foam/wave edge ring at shoreline transition
+  const foamMat = new THREE.MeshStandardMaterial({
+    color: 0xe8e8f0,
+    roughness: 0.9,
+    transparent: true,
+    opacity: 0.75
+  });
+  const foamW = SCALE.beachW * 1.6 + 1.5;
+  const foamD = 3.0;
+  const foam = new THREE.Mesh(
+    new THREE.BoxGeometry(foamW, 0.06, foamD),
+    foamMat
+  );
+  foam.position.set(0, 0.17, -(SCALE.beachD * 1.4 * 0.5 - foamD * 0.5 - 0.5));
+  foam.receiveShadow = true;
+  group.add(foam);
+
+  // 18B: Shell and driftwood scatter
+  const shellMat = new THREE.MeshStandardMaterial({ color: 0xe8d8c0, roughness: 0.7 });
+  const driftMat = new THREE.MeshStandardMaterial({ color: 0x8a6a4a, roughness: 0.9 });
+  const shellCount = 4 + Math.floor(rng() * 5);
+  for (let si = 0; si < shellCount; si++) {
+    const r = 0.12 + rng() * 0.18;
+    const shell = new THREE.Mesh(new THREE.SphereGeometry(r, 6, 5), shellMat);
+    shell.scale.y = 0.35;
+    shell.position.set(
+      (rng() - 0.5) * SCALE.beachW * 1.4,
+      0.17,
+      (rng() - 0.5) * SCALE.beachD * 1.0
+    );
+    group.add(shell);
+  }
+  // Driftwood logs
+  const logCount = 2 + Math.floor(rng() * 3);
+  for (let li = 0; li < logCount; li++) {
+    const logL = 1.5 + rng() * 2.5;
+    const logR = 0.14 + rng() * 0.1;
+    const log = new THREE.Mesh(new THREE.CylinderGeometry(logR, logR * 0.8, logL, 6), driftMat);
+    log.position.set(
+      (rng() - 0.5) * SCALE.beachW * 1.2,
+      0.19,
+      (rng() - 0.5) * SCALE.beachD * 0.8
+    );
+    log.rotation.y = rng() * Math.PI;
+    log.rotation.z = (rng() - 0.5) * 0.3;
+    group.add(log);
+  }
+
   if (hasOcean) {
     const water = new THREE.Mesh(
-      new THREE.BoxGeometry(SCALE.beachW, 0.12, SCALE.beachD * 0.6),
+      new THREE.BoxGeometry(SCALE.beachW * 1.8, 0.12, SCALE.beachD * 0.8),
       new THREE.MeshStandardMaterial({
-        color: 0x2b4b7a,
-        roughness: 0.4,
-        metalness: 0.2
+        color: 0x2b5a8a,
+        roughness: 0.25,
+        metalness: 0.25,
+        transparent: true,
+        opacity: 0.88
       })
     );
-    water.position.set(0, -0.05, -(SCALE.beachD * 0.65));
+    water.position.set(0, -0.04, -(SCALE.beachD * 1.4 * 0.75));
     water.receiveShadow = true;
     group.add(water);
+  }
+
+  // 18C: Beach seagull silhouettes circling overhead
+  const birdMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  const birdCount = 4 + Math.floor(rng() * 5);
+  for (let bi = 0; bi < birdCount; bi++) {
+    // Each bird = two small curved wings (boxes slightly tilted)
+    const bird = new THREE.Group();
+    for (const side of [-1, 1]) {
+      const wing = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.05, 0.12), birdMat);
+      wing.position.set(side * 0.22, 0, 0);
+      wing.rotation.z = side * 0.18;
+      bird.add(wing);
+    }
+    bird.position.set(
+      (rng() - 0.5) * SCALE.beachW * 1.6,
+      5 + rng() * 6,
+      -SCALE.beachD * 0.5 - rng() * 8
+    );
+    bird.userData.seagull = true;
+    bird.userData.drift = rng() * Math.PI * 2;
+    group.add(bird);
   }
 
   return group;
@@ -7846,6 +8546,50 @@ function createTempleGroup(rng: () => number): THREE.Group {
     stair.receiveShadow = true;
     group.add(stair);
   }
+  // 18: Magical light shafts descending through columns
+  const shaftCount = 3 + Math.floor(rng() * 2);
+  for (let i = 0; i < shaftCount; i++) {
+    const shaftH = colH + h * 0.3;
+    const shaft = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.08, 0.25, shaftH, 8, 1, true),
+      new THREE.MeshBasicMaterial({
+        color: 0xfff0a0,
+        transparent: true,
+        opacity: 0.07 + rng() * 0.05,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      })
+    );
+    const angle = (i / shaftCount) * Math.PI * 2;
+    const rad = rng() * w * 0.35;
+    shaft.position.set(Math.cos(angle) * rad, baseH + shaftH / 2 - 0.5, Math.sin(angle) * rad);
+    group.add(shaft);
+    // small glow pool at base of shaft
+    const pool = new THREE.Mesh(
+      new THREE.CircleGeometry(0.3 + rng() * 0.2, 12),
+      new THREE.MeshBasicMaterial({ color: 0xffee80, transparent: true, opacity: 0.18, depthWrite: false })
+    );
+    pool.rotation.x = -Math.PI / 2;
+    pool.position.set(shaft.position.x, baseH + 0.05, shaft.position.z);
+    group.add(pool);
+  }
+  // 18: Temple attendant silhouettes (2–4 figures near stairs)
+  const attendantCount = 2 + Math.floor(rng() * 3);
+  const figMat = new THREE.MeshStandardMaterial({ color: 0x3a3028, roughness: 0.9 });
+  for (let i = 0; i < attendantCount; i++) {
+    const fig = new THREE.Group();
+    // body
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.16, 0.9, 6), figMat);
+    body.position.y = 0.45;
+    fig.add(body);
+    // head
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.14, 6, 6), figMat);
+    head.position.y = 0.95;
+    fig.add(head);
+    const side = (rng() > 0.5 ? 1 : -1) * (w * 0.3 + rng() * w * 0.25);
+    fig.position.set(side, 0, -d / 2 - 1.2 - rng() * 1.5);
+    group.add(fig);
+  }
   return group;
 }
 
@@ -7909,6 +8653,36 @@ function createCaveGroup(rng: () => number): THREE.Group {
   interior.rotation.x = -Math.PI / 2;
   interior.position.y = 0.03;
   group.add(interior);
+  // 18: Magical glowing crystal cluster in cave center
+  const crystalColors = [0x40e0ff, 0x80aaff, 0xaa60ff, 0x20ffcc];
+  const cCount = 3 + Math.floor(rng() * 3);
+  for (let i = 0; i < cCount; i++) {
+    const cH = 0.5 + rng() * 1.4;
+    const crystalMat = new THREE.MeshStandardMaterial({
+      color: crystalColors[Math.floor(rng() * crystalColors.length)],
+      emissive: crystalColors[Math.floor(rng() * crystalColors.length)],
+      emissiveIntensity: 0.7 + rng() * 0.5,
+      roughness: 0.1,
+      metalness: 0.3,
+      transparent: true,
+      opacity: 0.75,
+    });
+    const crystal = new THREE.Mesh(new THREE.ConeGeometry(0.08 + rng() * 0.1, cH, 6), crystalMat);
+    const angle = rng() * Math.PI * 2;
+    const rad = rng() * 0.6;
+    crystal.position.set(Math.cos(angle) * rad, cH / 2 + 0.05, Math.sin(angle) * rad);
+    crystal.rotation.z = (rng() - 0.5) * 0.3;
+    crystal.castShadow = false;
+    group.add(crystal);
+  }
+  // Emanating glow pool under crystals
+  const glowPool = new THREE.Mesh(
+    new THREE.CircleGeometry(0.8, 16),
+    new THREE.MeshBasicMaterial({ color: 0x4080ff, transparent: true, opacity: 0.2, depthWrite: false })
+  );
+  glowPool.rotation.x = -Math.PI / 2;
+  glowPool.position.y = 0.04;
+  group.add(glowPool);
   return group;
 }
 
