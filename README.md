@@ -42,7 +42,7 @@ Welcome to the Final Design Report for the Dream to World Engine project. This p
 • [Spring Final Presentation](docs/presentation/Dream_to_World_Engine_Presentation.pdf)  
 
 ### 9. Final Expo Poster
-• [Expo Poster](docs/poster.pdf)  
+• [Expo Poster](docs/alkurdzi_EXPO.pdf)  
 
 ### 10. Self Assessment Essays
 • Updated version of Assignment 3  
