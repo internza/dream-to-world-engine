@@ -1,4 +1,4 @@
-# Self Assessment Essays
+******# Self Assessment Essays
 
 ## Zyad Alkurdi
 
@@ -9,3 +9,4 @@ I contributed heavily to user stories, task planning, and the level based diagra
 Throughout the term I improved in breaking large ideas into small achievable tasks, documenting decisions, and keeping the project organized. I also strengthened my skills in graphics programming and system planning. I feel confident about my progress and the direction of the project.
 
 I expect to apply everything I learned this semester to build more advanced features in the next phase, including improved generation logic, dynamic behaviors, and deeper integration with model rendering and interaction.
+******
